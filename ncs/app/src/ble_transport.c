@@ -195,14 +195,56 @@ int ble_transport_init(void)
 	/* Initialize RSSI reading work */
 	k_work_init_delayable(&rssi_read_work, rssi_read_work_handler);
 
-	/* Start scanning */
-	err = ble_central_start_scan();
-	if (err) {
-		LOG_ERR("Scan start failed (err %d)", err);
-		return err;
-	}
+	/* SFP-667: do NOT scan at boot. Central scanning is gated on a host being
+	 * attached to our output (BLE HID peripheral or USB) — there's no point
+	 * connecting to a MouthPad until there's somewhere to relay its data. Scan
+	 * is started/stopped via ble_transport_{ble,usb}_host_changed(). */
+	LOG_INF("Boot complete — central scan deferred until a host attaches");
 
 	return 0;
+}
+
+/* ── Host-presence gating for central scanning ─────────────────────────────── */
+/* Tracks whether a host is attached over either transport. On the 0->1 edge we
+ * start scanning for MouthPads; on the 1->0 edge we stop scanning and disconnect
+ * any connected MouthPad so it learns the relay is no longer forwarding. */
+K_MUTEX_DEFINE(host_state_lock);
+static bool ble_host_present;
+static bool usb_host_present;
+static bool scanning_for_host;
+
+static void update_scan_for_host_state(void)
+{
+	k_mutex_lock(&host_state_lock, K_FOREVER);
+	bool any_host = ble_host_present || usb_host_present;
+
+	if (any_host && !scanning_for_host) {
+		scanning_for_host = true;
+		LOG_INF("Host attached — starting MouthPad scan");
+		int err = ble_central_start_scan();
+		if (err) {
+			LOG_ERR("Scan start failed (err %d)", err);
+			scanning_for_host = false;
+		}
+	} else if (!any_host && scanning_for_host) {
+		scanning_for_host = false;
+		LOG_INF("No host attached — stopping scan and disconnecting MouthPad(s)");
+		(void)ble_central_stop_scan();
+		ble_central_disconnect_all(BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+	}
+	k_mutex_unlock(&host_state_lock);
+}
+
+void ble_transport_ble_host_changed(bool connected)
+{
+	ble_host_present = connected;
+	update_scan_for_host_state();
+}
+
+void ble_transport_usb_host_changed(bool connected)
+{
+	usb_host_present = connected;
+	update_scan_for_host_state();
 }
 
 /* Transport registration functions */

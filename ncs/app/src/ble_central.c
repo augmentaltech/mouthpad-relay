@@ -1069,6 +1069,27 @@ int ble_central_stop_scan(void)
 	return bt_scan_stop();
 }
 
+/* Disconnect every central (MouthPad) link with the given HCI reason. Used when
+ * the relay's host goes away so the MouthPad(s) learn the relay is no longer
+ * forwarding (e.g. so they can go idle / re-advertise to their own host). */
+static void disconnect_central_cb(struct bt_conn *conn, void *data)
+{
+	struct bt_conn_info info;
+	uint8_t reason = *(uint8_t *)data;
+
+	if (bt_conn_get_info(conn, &info) == 0 && info.role == BT_CONN_ROLE_CENTRAL) {
+		char addr[BT_ADDR_LE_STR_LEN];
+		bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+		LOG_INF("Disconnecting MouthPad %s (reason 0x%02x)", addr, reason);
+		(void)bt_conn_disconnect(conn, reason);
+	}
+}
+
+void ble_central_disconnect_all(uint8_t reason)
+{
+	bt_conn_foreach(BT_CONN_TYPE_LE, disconnect_central_cb, &reason);
+}
+
 /* Start additional scan mode - scan for NEW devices (not already bonded) */
 int ble_central_start_additional_scan(void)
 {

@@ -23,6 +23,7 @@
 #include <zephyr/logging/log.h>
 
 #include "ble_hids.h"
+#include "ble_transport.h"  /* SFP-667: gate central scan on host presence */
 
 LOG_MODULE_REGISTER(ble_hids, LOG_LEVEL_INF);
 
@@ -128,6 +129,9 @@ static void hids_connected(struct bt_conn *conn, uint8_t err)
 		LOG_ERR("bt_hids_connected failed (err %d)", e);
 	}
 
+	/* SFP-667: a host is now attached — let central scanning for MouthPads begin. */
+	ble_transport_ble_host_changed(true);
+
 	/* HID notifications require an encrypted link; request it (the host
 	 * normally drives pairing, this nudges it / re-encrypts a known bond). */
 	e = bt_conn_set_security(conn, BT_SECURITY_L2);
@@ -146,6 +150,10 @@ static void hids_disconnected(struct bt_conn *conn, uint8_t reason)
 	(void)bt_hids_disconnected(&hids_obj, conn);
 	bt_conn_unref(m_host_conn);
 	m_host_conn = NULL;
+
+	/* SFP-667: host gone — stop central scanning and disconnect any MouthPad
+	 * (handled in ble_transport on the 1->0 host edge). */
+	ble_transport_ble_host_changed(false);
 
 	advertising_start();
 }

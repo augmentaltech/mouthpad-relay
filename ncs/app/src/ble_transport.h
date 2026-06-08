@@ -56,4 +56,10 @@ bool ble_transport_is_hid_ready(void);
 void ble_transport_handle_connection(struct bt_conn *conn);
 void ble_transport_handle_disconnection(struct bt_conn *conn, uint8_t reason);
 
+/* SFP-667: host-presence gating for central scanning. Call when a host attaches
+ * or detaches over either output transport; central scanning runs only while at
+ * least one host is connected. */
+void ble_transport_ble_host_changed(bool connected);
+void ble_transport_usb_host_changed(bool connected);
+
 #endif /* BLE_TRANSPORT_H */

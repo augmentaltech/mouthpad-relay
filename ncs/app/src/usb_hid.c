@@ -19,6 +19,7 @@
 #include <zephyr/logging/log.h>
 #include <nrf.h>
 #include "sample_usbd.h"
+#include "ble_transport.h"  /* SFP-667: gate central scan on USB host presence */
 
 LOG_MODULE_REGISTER(usb_mouse, LOG_LEVEL_INF);
 
@@ -174,6 +175,11 @@ static void usb_msg_cb(struct usbd_context *const ctx,
 			/* Clear retry counter on successful enumeration */
 			NRF_POWER->GPREGRET2 = 0;
 			LOG_INF("USB enumeration successful");
+			/* SFP-667: a USB host is attached — allow central scanning. */
+			ble_transport_usb_host_changed(true);
+		} else {
+			/* Deconfigured — USB host went away. */
+			ble_transport_usb_host_changed(false);
 		}
 		break;
 

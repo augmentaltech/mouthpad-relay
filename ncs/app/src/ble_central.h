@@ -17,6 +17,8 @@
 int ble_central_init(void);
 int ble_central_start_scan(void);
 int ble_central_stop_scan(void);
+/* Disconnect all central (MouthPad) links with the given HCI reason. */
+void ble_central_disconnect_all(uint8_t reason);
 int ble_central_start_additional_scan(void);  /* Scan for NEW device (ignore already bonded) */
 
 /* Connection management */
