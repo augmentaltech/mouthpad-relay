@@ -41,6 +41,18 @@ target_include_directories(app PRIVATE
   src/mouthpad-proto/src/C
 )
 
+# usb_hid.c includes <nrf.h> (MDK SoC registers: NRF_POWER/NRF_USBD). Zephyr puts
+# the MDK on the include path for its own libs but not always the app target, and
+# its location moved between NCS versions (nrfx/mdk -> nrfx/bsp/stable/mdk). Add
+# whichever exists so the app target can resolve <nrf.h>.
+foreach(_mdk
+        "${ZEPHYR_HAL_NORDIC_MODULE_DIR}/nrfx/mdk"
+        "${ZEPHYR_HAL_NORDIC_MODULE_DIR}/nrfx/bsp/stable/mdk")
+  if(EXISTS "${_mdk}/nrf.h")
+    target_include_directories(app PRIVATE "${_mdk}")
+  endif()
+endforeach()
+
 # NORDIC SDK APP START
   target_sources(app PRIVATE
     src/ble_transport.c

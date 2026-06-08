@@ -1,0 +1,73 @@
+/*
+ * Nordic nRF52840 DK (PCA10056) overlay for MouthPad^USB.
+ * Bench/bring-up target (e.g. the "Vox" DK) flashed over J-Link — no UF2
+ * bootloader, standard partitions, app linked flat at 0x0 (--no-sysbuild).
+ *
+ * Provides the nodes the app expects that aren't in the stock DK devicetree:
+ *  - dual CDC ACM UARTs (cdc_acm_uart0 = NUS tunnel, cdc_acm_uart1 = console)
+ *  - a PWM + buzzer-pwm alias + buzzer node (buzzer.c fetches it at compile time
+ *    on non-XIAO boards). Mapped to a free pin (P0.04); no physical buzzer on DK.
+ * DK LED aliases (led0..3) and sw0 already exist in the board DTS, so leds.c /
+ * button.c bind without remapping (4 mono-green LEDs — colors are cosmetic here).
+ */
+
+&pinctrl {
+	pwm1_default: pwm1_default {
+		group1 {
+			psels = <NRF_PSEL(PWM_OUT0, 0, 4)>;
+		};
+	};
+	pwm1_sleep: pwm1_sleep {
+		group1 {
+			psels = <NRF_PSEL(PWM_OUT0, 0, 4)>;
+			low-power-enable;
+		};
+	};
+};
+
+&pwm1 {
+	status = "okay";
+	pinctrl-0 = <&pwm1_default>;
+	pinctrl-1 = <&pwm1_sleep>;
+	pinctrl-names = "default", "sleep";
+};
+
+/ {
+	chosen {
+		nordic,nus-uart = &cdc_acm_uart0;
+		zephyr,console = &cdc_acm_uart1;
+		zephyr,shell-uart = &cdc_acm_uart1;
+	};
+
+	aliases {
+		buzzer-pwm = &pwm1;
+	};
+
+	hid_dev_0: hid_dev_0 {
+		compatible = "zephyr,hid-device";
+		label = "MouthPad^HID";
+		protocol-code = "mouse";
+		in-report-size = <64>;
+		in-polling-period-us = <1000>;
+	};
+
+	buzzer {
+		compatible = "pwm-buzzer";
+		pwms = <&pwm1 0 1000000 PWM_POLARITY_NORMAL>;
+		label = "Passive Buzzer";
+	};
+};
+
+/* Add the two CDC nodes the app expects (cdc_acm_uart0 = NUS, cdc_acm_uart1 =
+ * console). The board's default board_cdc_acm_uart (from app.overlay) is left
+ * defined but unused — USB-next registers CDC functions in code, not from DT. */
+&zephyr_udc0 {
+	cdc_acm_uart0: cdc_acm_uart0 {
+		compatible = "zephyr,cdc-acm-uart";
+		label = "CDC_ACM_0";
+	};
+	cdc_acm_uart1: cdc_acm_uart1 {
+		compatible = "zephyr,cdc-acm-uart";
+		label = "CDC_ACM_1";
+	};
+};
