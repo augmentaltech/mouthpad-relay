@@ -27,6 +27,7 @@
 #include <zephyr/usb/class/usbd_hid.h>
 
 #include "ble_hid.h"
+#include "ble_hids.h"  /* SFP-667: re-emit MouthPad HID out our BLE peripheral */
 
 /* Forward declarations for direct USB access */
 extern const struct device *hid_dev;
@@ -219,6 +220,9 @@ static uint8_t hogp_notify_cb(struct bt_hogp *hogp,
 			};
 			LOG_DBG("Consumer control: bitmap 0x%02x -> usage 0x%04x", data[0], usage);
 			ret = hid_device_submit_report(hid_dev, sizeof(consumer_report), consumer_report);
+			/* SFP-667: also re-emit out our BLE HID peripheral (payload only,
+			 * no report-ID byte — HIDS carries the ID via its report reference). */
+			(void)ble_hids_send_report(0x03, &consumer_report[1], 2);
 		} else {
 			/* Send directly to USB for zero latency */
 			uint8_t report_with_id[size + 1];
@@ -227,6 +231,8 @@ static uint8_t hogp_notify_cb(struct bt_hogp *hogp,
 				report_with_id[i + 1] = data[i];
 			}
 			ret = hid_device_submit_report(hid_dev, size + 1, report_with_id);
+			/* SFP-667: also re-emit out our BLE HID peripheral. */
+			(void)ble_hids_send_report(report_id, data, size);
 		}
 
 		if (ret) {

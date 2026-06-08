@@ -17,6 +17,7 @@
 
 #include "usb_cdc.h"
 #include "usb_hid.h"
+#include "ble_hids.h"
 #include "ble_transport.h"
 #include "ble_central.h"
 #include "ble_bas.h"
@@ -344,6 +345,18 @@ int main(void)
 		return 0;
 	}
 	LOG_INF("BLE Transport initialized successfully");
+
+#if defined(CONFIG_BT_HIDS)
+	/* SFP-667: bring up the BLE HID peripheral output (re-expose the MouthPad's
+	 * HID over our own BLE link) and start advertising. Non-fatal: USB output
+	 * still works if this fails. */
+	err = ble_hids_init();
+	if (err != 0) {
+		LOG_ERR("ble_hids_init failed (err %d) — BLE HID output disabled", err);
+	} else {
+		LOG_INF("BLE HID peripheral output initialized");
+	}
+#endif
 
 	/* Register USB callbacks with BLE Transport */
 	ble_transport_register_usb_cdc_callback((usb_cdc_send_cb_t)mouthpad_nus_data_received_callback);

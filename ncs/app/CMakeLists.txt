@@ -59,6 +59,7 @@ endforeach()
     src/ble_central.c
     src/ble_nus_client.c
     src/ble_hid.c
+    src/ble_hids.c
     src/ble_bas.c
     src/ble_dis.c
     src/usb_cdc.c

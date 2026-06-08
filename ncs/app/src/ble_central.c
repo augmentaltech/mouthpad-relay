@@ -161,6 +161,14 @@ static void connected(struct bt_conn *conn, uint8_t conn_err)
 	char addr[BT_ADDR_LE_STR_LEN];
 	int err;
 
+	/* SFP-667: the host (peripheral-role) link is owned by ble_hids.c. Only
+	 * act on central-role connections (the MouthPad) here. */
+	struct bt_conn_info conn_info;
+	if (bt_conn_get_info(conn, &conn_info) == 0 &&
+	    conn_info.role == BT_CONN_ROLE_PERIPHERAL) {
+		return;
+	}
+
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 
 	if (conn_err) {
@@ -208,6 +216,13 @@ static void connected(struct bt_conn *conn, uint8_t conn_err)
 static void disconnected(struct bt_conn *conn, uint8_t reason)
 {
 	char addr[BT_ADDR_LE_STR_LEN];
+
+	/* SFP-667: the host (peripheral-role) link is owned by ble_hids.c. */
+	struct bt_conn_info conn_info;
+	if (bt_conn_get_info(conn, &conn_info) == 0 &&
+	    conn_info.role == BT_CONN_ROLE_PERIPHERAL) {
+		return;
+	}
 
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 
