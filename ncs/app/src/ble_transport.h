@@ -61,5 +61,9 @@ void ble_transport_handle_disconnection(struct bt_conn *conn, uint8_t reason);
  * least one host is connected. */
 void ble_transport_ble_host_changed(bool connected);
 void ble_transport_usb_host_changed(bool connected);
+/* SFP-667: a companion that subscribes to the relay's NUS (app protocol) is also
+ * a host — it drives the relay over NUS without needing the HID/OS bond. Keeps
+ * scanning alive independently of the (flappy) HID-host state. */
+void ble_transport_nus_host_changed(bool connected);
 
 #endif /* BLE_TRANSPORT_H */

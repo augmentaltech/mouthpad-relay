@@ -52,6 +52,12 @@ static int64_t additional_scan_start_time = 0;
 #define MOUTHPAD_COMPANY_ID        0x4147
 #define MOUTHPAD_MFR_DATA_PAYLOAD  "MP1"
 
+/* SFP-667 (testing): pin the central to ONE MouthPad by BLE address, so the relay
+ * ignores other MouthPads in RF range (it otherwise pairs with the first found,
+ * which may be a stranger with a stale bond). Static-random address from
+ * tools/read_ble_mac.sh. TL_MPMPMPMP DK = EA:6B:09:76:D4:BE. Set to "" to disable. */
+#define RELAY_TARGET_MOUTHPAD_ADDR "EA:6B:09:76:D4:BE"
+
 /* Track if any bonded devices are advertising in current scan session */
 static bool bonded_device_seen_advertising = false;
 
@@ -398,6 +404,18 @@ static void scan_filter_match(struct bt_scan_device_info *device_info,
 		LOG_DBG("Skipping device %s: missing expected manufacturer data", addr);
 		return;
 	}
+
+#ifdef RELAY_TARGET_MOUTHPAD_ADDR
+	/* SFP-667 (testing): only connect to the pinned MouthPad address ("" = off). */
+	if (RELAY_TARGET_MOUTHPAD_ADDR[0] != '\0') {
+		bt_addr_le_t target;
+		if (bt_addr_le_from_str(RELAY_TARGET_MOUTHPAD_ADDR, "random", &target) == 0 &&
+		    bt_addr_le_cmp(device_info->recv_info->addr, &target) != 0) {
+			LOG_INF("Skipping %s: not target MouthPad %s", addr, RELAY_TARGET_MOUTHPAD_ADDR);
+			return;
+		}
+	}
+#endif
 
 	/* CRITICAL: Set connecting state IMMEDIATELY before any logging or processing
 	 * This ensures status queries return CONNECTING as soon as we decide to connect */

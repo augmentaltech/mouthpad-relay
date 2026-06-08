@@ -12,6 +12,7 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/drivers/uart.h>
 #include <zephyr/sys/ring_buffer.h>
+#include <string.h>
 #include "MouthpadRelay.pb.h"
 #include "pb_encode.h"
 #include "ble_nus_server.h"  /* SFP-667: fan relay responses out to the BLE host */
@@ -137,6 +138,38 @@ int usb_cdc_init(void)
 	LOG_INF("USB CDC: CDC0 ready: %s (interrupt-driven)", cdc_acm_dev->name);
 	LOG_INF("USB CDC: Initialization successful");
 	return 0;
+}
+
+/* SFP-667: wrap raw MouthPad NUS bytes in a RelayToAppMessage{PassThroughToApp}
+ * and notify the BLE host only. The USB CDC stream stays raw (usb_cdc_send_data),
+ * so this is additive — the BLE relay host always sees the envelope protocol,
+ * matching the AppToRelayMessage it writes on the RX side. No-op when no BLE host
+ * is connected. */
+int usb_cdc_send_passthrough_to_app_ble(const uint8_t *data, uint16_t len)
+{
+	if (!data || len == 0) {
+		return -EINVAL;
+	}
+	if (!ble_nus_server_host_connected()) {
+		return 0;
+	}
+
+	mouthware_message_RelayToAppMessage msg = mouthware_message_RelayToAppMessage_init_zero;
+	msg.which_message_body = mouthware_message_RelayToAppMessage_pass_through_to_app_tag;
+	if (len > sizeof(msg.message_body.pass_through_to_app.data.bytes)) {
+		LOG_WRN("PassThroughToApp payload %u too large, dropping", len);
+		return -EMSGSIZE;
+	}
+	msg.message_body.pass_through_to_app.data.size = len;
+	memcpy(msg.message_body.pass_through_to_app.data.bytes, data, len);
+
+	uint8_t buf[512];
+	pb_ostream_t stream = pb_ostream_from_buffer(buf, sizeof(buf));
+	if (!pb_encode(&stream, mouthware_message_RelayToAppMessage_fields, &msg)) {
+		LOG_ERR("PassThroughToApp encode failed: %s", PB_GET_ERROR(&stream));
+		return -EIO;
+	}
+	return ble_nus_server_send(buf, stream.bytes_written);
 }
 
 /* Send data to USB CDC with robust packet framing */

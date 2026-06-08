@@ -36,6 +36,10 @@ int usb_cdc_receive_data(uint8_t *buffer, uint16_t max_len);
 /* Async USB CDC proto message sending (non-blocking) */
 int usb_cdc_send_proto_message_async(mouthware_message_RelayToAppMessage message);
 
+/* SFP-667: wrap raw MouthPad NUS bytes in RelayToAppMessage{PassThroughToApp}
+ * and notify the BLE relay host (no-op if no BLE host connected). */
+int usb_cdc_send_passthrough_to_app_ble(const uint8_t *data, uint16_t len);
+
 /* CRC calculation for packet framing */
 uint16_t calculate_crc16(const uint8_t *data, uint16_t len);
 

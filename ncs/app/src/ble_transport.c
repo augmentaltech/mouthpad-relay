@@ -36,6 +36,20 @@ static bool nus_client_ready = false;
 static bool mtu_exchange_complete = false;
 static bool bridging_started = false;
 
+/* SFP-667: app→MouthPad writes (companion StartStream/DataStreamConfig) can
+ * arrive before the relay's central NUS link to the MouthPad is up — the host
+ * attaches, the relay starts scanning, and the companion sends config in the
+ * gap before connection completes. Buffer a few and flush once nus_client_ready
+ * so the initial stream config isn't lost. Cleared on MouthPad disconnect. */
+#define PENDING_NUS_MAX_MSGS 8
+#define PENDING_NUS_MSG_SIZE 256
+struct pending_nus_msg {
+	uint16_t len;
+	uint8_t data[PENDING_NUS_MSG_SIZE];
+};
+static struct pending_nus_msg pending_nus[PENDING_NUS_MAX_MSGS];
+static uint8_t pending_nus_count;
+
 /* HID Bridge state */
 static bool hid_client_ready = false;
 static bool hid_discovery_complete = false;
@@ -211,12 +225,13 @@ int ble_transport_init(void)
 K_MUTEX_DEFINE(host_state_lock);
 static bool ble_host_present;
 static bool usb_host_present;
+static bool nus_host_present;
 static bool scanning_for_host;
 
 static void update_scan_for_host_state(void)
 {
 	k_mutex_lock(&host_state_lock, K_FOREVER);
-	bool any_host = ble_host_present || usb_host_present;
+	bool any_host = ble_host_present || usb_host_present || nus_host_present;
 
 	if (any_host && !scanning_for_host) {
 		scanning_for_host = true;
@@ -247,6 +262,12 @@ void ble_transport_usb_host_changed(bool connected)
 	update_scan_for_host_state();
 }
 
+void ble_transport_nus_host_changed(bool connected)
+{
+	nus_host_present = connected;
+	update_scan_for_host_state();
+}
+
 /* Transport registration functions */
 int ble_transport_register_usb_cdc_callback(usb_cdc_send_cb_t cb)
 {
@@ -270,7 +291,16 @@ int ble_transport_start_bridging(void)
 int ble_transport_send_nus_data(const uint8_t *data, uint16_t len)
 {
 	if (!nus_client_ready) {
-		LOG_WRN("NUS client not ready");
+		/* Buffer until the MouthPad link is ready (flushed in discovery cb). */
+		if (len <= PENDING_NUS_MSG_SIZE && pending_nus_count < PENDING_NUS_MAX_MSGS) {
+			struct pending_nus_msg *m = &pending_nus[pending_nus_count++];
+			m->len = len;
+			memcpy(m->data, data, len);
+			LOG_INF("MouthPad NUS not ready — buffered %u bytes (%u queued)",
+				len, pending_nus_count);
+			return 0;
+		}
+		LOG_WRN("NUS client not ready, pending buffer full — dropping %u bytes", len);
 		return -ENOTCONN;
 	}
 
@@ -365,10 +395,14 @@ static void ble_nus_data_received_cb(const uint8_t *data, uint16_t len)
 	last_data_time = k_uptime_get();
 	LOG_DBG("=== DATA ACTIVITY MARKED ===");
 	
-	// Bridge NUS data directly to USB CDC
+	// Bridge NUS data directly to USB CDC (raw, framed)
 	if (usb_cdc_send_callback) {
 		usb_cdc_send_callback(data, len);
 	}
+
+	// SFP-667: also deliver to the BLE relay host wrapped in the envelope
+	// protocol (RelayToAppMessage{PassThroughToApp}). No-op if no BLE host.
+	(void)usb_cdc_send_passthrough_to_app_ble(data, len);
 }
 
 static void ble_nus_mtu_exchange_cb(uint16_t mtu)
@@ -382,7 +416,19 @@ static void ble_nus_discovery_complete_cb(void)
 	LOG_INF("NUS client ready - service discovery complete");
 	nus_client_ready = true;
 	LOG_INF("NUS client ready - bridge operational");
-	
+
+	/* SFP-667: flush any app→MouthPad writes buffered before the link was up. */
+	if (pending_nus_count > 0) {
+		LOG_INF("Flushing %u pending NUS msg(s) to MouthPad", pending_nus_count);
+		for (uint8_t i = 0; i < pending_nus_count; i++) {
+			int err = ble_nus_client_send_data(pending_nus[i].data, pending_nus[i].len);
+			if (err) {
+				LOG_WRN("Flush pending NUS %u failed: %d", i, err);
+			}
+		}
+		pending_nus_count = 0;
+	}
+
 	/* Trigger HID discovery after NUS discovery completes */
 	nus_discovery_completed_cb();
 }
@@ -597,6 +643,9 @@ static void ble_central_disconnected_cb(struct bt_conn *conn, uint8_t reason)
 	nus_client_ready = false;
 	hid_client_ready = false;
 	hid_discovery_complete = false;
+	/* SFP-667: drop any app→MouthPad writes buffered for the link that just died;
+	 * they belong to the previous session. */
+	pending_nus_count = 0;
 
 	/* Stop periodic RSSI reading */
 	rssi_reading_active = false;

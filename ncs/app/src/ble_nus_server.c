@@ -16,6 +16,7 @@
 #include <string.h>
 
 #include "ble_nus_server.h"
+#include "ble_transport.h"  /* SFP-667: NUS subscriber is also a host (gates scan) */
 
 LOG_MODULE_REGISTER(ble_nus_server, LOG_LEVEL_INF);
 
@@ -36,6 +37,21 @@ static void nus_received(struct bt_conn *conn, const uint8_t *const data, uint16
 {
 	struct nus_rx_msg msg;
 
+	/* Only the companion speaks the relay protocol over NUS RX, so the writer is
+	 * our app host. Bind the send target to *this* connection (not whichever peer
+	 * connected last, e.g. the OS HID stack) and gate central scanning on it — the
+	 * relay relays for the companion without needing the HID/OS bond, and stays up
+	 * even if the HID host flaps. (bt_nus's send_enabled cb carries no conn in this
+	 * NCS, so the RX write is our reliable per-connection signal.) */
+	if (conn != m_host_conn) {
+		if (m_host_conn) {
+			bt_conn_unref(m_host_conn);
+		}
+		m_host_conn = bt_conn_ref(conn);
+		LOG_INF("NUS companion bound — host attached via NUS");
+		ble_transport_nus_host_changed(true);
+	}
+
 	if (len > NUS_RX_MSG_MAX) {
 		LOG_WRN("NUS RX %u bytes > max %u, dropping", len, NUS_RX_MSG_MAX);
 		return;
@@ -51,29 +67,17 @@ static struct bt_nus_cb nus_cb = {
 	.received = nus_received,
 };
 
-/* Track the peripheral host connection for bt_nus_send(). Acts only on the
- * peripheral role; the central (MouthPad) link is owned elsewhere. */
-static void nus_srv_connected(struct bt_conn *conn, uint8_t err)
-{
-	struct bt_conn_info info;
-
-	if (err || bt_conn_get_info(conn, &info) != 0 ||
-	    info.role != BT_CONN_ROLE_PERIPHERAL) {
-		return;
-	}
-	m_host_conn = bt_conn_ref(conn);
-}
-
 static void nus_srv_disconnected(struct bt_conn *conn, uint8_t reason)
 {
 	if (conn == m_host_conn) {
 		bt_conn_unref(m_host_conn);
 		m_host_conn = NULL;
+		LOG_INF("NUS companion disconnected — host detached");
+		ble_transport_nus_host_changed(false);
 	}
 }
 
 BT_CONN_CB_DEFINE(nus_srv_conn_cb) = {
-	.connected = nus_srv_connected,
 	.disconnected = nus_srv_disconnected,
 };
 
