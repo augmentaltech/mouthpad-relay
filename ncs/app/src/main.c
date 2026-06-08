@@ -18,6 +18,7 @@
 #include "usb_cdc.h"
 #include "usb_hid.h"
 #include "ble_hids.h"
+#include "ble_nus_server.h"
 #include "ble_transport.h"
 #include "ble_central.h"
 #include "ble_bas.h"
@@ -283,233 +284,21 @@ int mouthpad_nus_data_received_callback(const uint8_t *data, uint16_t len)
 }
 
 
-int main(void)
+/* Handle one decoded AppToRelayMessage payload. Shared by the USB CDC framed-RX
+ * path and the BLE NUS server RX path; always invoked from the main loop. */
+static void handle_app_to_relay_payload(const uint8_t *buf, uint16_t len)
 {
-	int err;
-
-	LOG_INF("=== MouthPad^USB Starting === Built: %s %s", __DATE__, __TIME__);
-
-	/* Initialize USB device stack (HID + CDC) */
-	LOG_INF("Initializing USB device stack...");
-	err = usb_init();
-	if (err != 0) {
-		LOG_ERR("usb_init failed (err %d)", err);
-		return 0;
+	mouthware_message_AppToRelayMessage message;
+	pb_istream_t stream = pb_istream_from_buffer(buf, len);
+	if (!pb_decode(&stream, mouthware_message_AppToRelayMessage_fields, &message)) {
+		LOG_ERR("AppToRelay decode failed: %s", PB_GET_ERROR(&stream));
+		return;
 	}
-	LOG_INF("USB device stack initialized successfully");
-
-	/* Initialize USB CDC (get CDC0 device reference) */
-	LOG_INF("Initializing USB CDC...");
-	err = usb_cdc_init();
-	if (err != 0) {
-		LOG_ERR("usb_cdc_init failed (err %d)", err);
-		return 0;
-	}
-	LOG_INF("USB CDC initialized successfully");
-
-	/* Debug: Test HWINFO device ID reading */
-	uint8_t hwid[8];
-	ssize_t hwid_len = hwinfo_get_device_id(hwid, sizeof(hwid));
-	if (hwid_len > 0) {
-		LOG_INF("USB Serial Number: %02X%02X%02X%02X%02X%02X%02X%02X",
-			hwid[0], hwid[1], hwid[2], hwid[3],
-			hwid[4], hwid[5], hwid[6], hwid[7]);
-	} else {
-		LOG_ERR("HWINFO get_device_id failed: %d", hwid_len);
-	}
-
-	/* Initialize OLED Display */
-	err = oled_display_init();
-	if (err != 0) {
-		LOG_WRN("oled_display_init failed (err %d) - continuing without display", err);
-		/* Continue without display - it's not critical for core functionality */
-	} else {
-		/* Show splash screen with Augmental logo */
-		oled_display_splash_screen(2000);  /* Show logo for 2 seconds */
-	}
-
-	/* Initialize Passive Buzzer */
-	err = buzzer_init();
-	if (err != 0) {
-		LOG_WRN("buzzer_init failed (err %d) - continuing without buzzer", err);
-		/* Continue without buzzer - it's not critical for core functionality */
-	} else if (buzzer_is_available()) {
-		LOG_INF("Passive Buzzer initialized successfully");
-	}
-
-	/* Initialize BLE Transport */
-	LOG_INF("Initializing BLE Transport...");
-	err = ble_transport_init();
-	if (err != 0) {
-		LOG_ERR("ble_transport_init failed (err %d)", err);
-		return 0;
-	}
-	LOG_INF("BLE Transport initialized successfully");
-
-#if defined(CONFIG_BT_HIDS)
-	/* SFP-667: bring up the BLE HID peripheral output (re-expose the MouthPad's
-	 * HID over our own BLE link) and start advertising. Non-fatal: USB output
-	 * still works if this fails. */
-	err = ble_hids_init();
-	if (err != 0) {
-		LOG_ERR("ble_hids_init failed (err %d) — BLE HID output disabled", err);
-	} else {
-		LOG_INF("BLE HID peripheral output initialized");
-	}
-#endif
-
-	/* Register USB callbacks with BLE Transport */
-	ble_transport_register_usb_cdc_callback((usb_cdc_send_cb_t)mouthpad_nus_data_received_callback);
-	ble_transport_register_usb_hid_callback(usb_hid_data_callback);
-
-	/* Start bridging */
-	ble_transport_start_bridging();
-
-	LOG_INF("Starting USB ↔ BLE bridge (NUS + HID)");
-
-	/* Initialize LED subsystem */
-	LOG_INF("Initializing LED subsystem...");
-	err = leds_init();
-	if (err != 0) {
-		LOG_WRN("leds_init failed (err %d) - continuing without LEDs", err);
-		/* Continue without LEDs - not critical for core functionality */
-	} else {
-		LOG_INF("LED subsystem initialized successfully");
-		
-		/* Choose color mode based on LED hardware */
-		if (leds_has_neopixel()) {
-			/* NeoPixel supports smooth gradients */
-			leds_set_battery_color_mode(BAS_COLOR_MODE_GRADIENT);
-			LOG_INF("Using gradient mode for NeoPixel LEDs");
-		} else {
-			/* GPIO LEDs work better with discrete colors */
-			leds_set_battery_color_mode(BAS_COLOR_MODE_DISCRETE);
-			LOG_INF("Using discrete mode for GPIO LEDs");
-		}
-		
-		leds_set_state(LED_STATE_SCANNING);  /* Start in scanning state */
-	}
-	
-	/* Initialize User Button */
-	LOG_INF("Initializing user button...");
-	err = button_init();
-	if (err != 0) {
-		LOG_WRN("button_init failed (err %d) - continuing without button", err);
-		/* Continue without button - not critical for core functionality */
-	} else {
-		LOG_INF("User button initialized successfully");
-		button_register_callback(button_event_callback);
-	}
-	
-	static int display_update_counter = 0;
-
-	/* Reset display state after splash screen to ensure status updates work */
-	if (oled_display_is_available()) {
-		oled_display_reset_state();
-	}
-
-	/* Packet framing state machine for CDC RX */
-	enum {
-		FRAME_STATE_SEARCH_MAGIC1,  // Looking for 0xAA
-		FRAME_STATE_SEARCH_MAGIC2,  // Looking for 0x55
-		FRAME_STATE_LENGTH_HIGH,    // Reading length high byte
-		FRAME_STATE_LENGTH_LOW,     // Reading length low byte
-		FRAME_STATE_PAYLOAD,        // Reading payload
-		FRAME_STATE_CRC_HIGH,       // Reading CRC high byte
-		FRAME_STATE_CRC_LOW         // Reading CRC low byte
-	} frame_state = FRAME_STATE_SEARCH_MAGIC1;
-
-	static uint8_t frame_buffer[512];
-	static uint16_t frame_length = 0;
-	static uint16_t frame_pos = 0;
-	static uint16_t expected_crc = 0;
-
-	LOG_INF("Entering main loop...");
-
-	for (;;) {
-		/* USB CDC ↔ BLE NUS Bridge */
-
-		/* Check BLE connection status and HID data activity */
-		bool is_connected = ble_transport_is_connected();
-		bool ble_hid_activity = ble_transport_has_hid_data_activity();
-		uint8_t battery_level = ble_bas_get_battery_level();
-		int8_t rssi_dbm = is_connected ? ble_transport_get_rssi() : 0;
-
-		// Check for data from USB CDC - parse framed packets [0xAA 0x55][len][payload][CRC]
-		uint8_t c;
-		int bytes_read = usb_cdc_receive_data(&c, 1);
-
-		if (bytes_read > 0) {
-			switch (frame_state) {
-				case FRAME_STATE_SEARCH_MAGIC1:
-					if (c == 0xAA) {
-						frame_state = FRAME_STATE_SEARCH_MAGIC2;
-					}
-					break;
-
-				case FRAME_STATE_SEARCH_MAGIC2:
-					if (c == 0x55) {
-						frame_state = FRAME_STATE_LENGTH_HIGH;
-						frame_pos = 0;
-					} else if (c != 0xAA) {
-						// Not magic byte sequence, restart search
-						frame_state = FRAME_STATE_SEARCH_MAGIC1;
-					}
-					// If c == 0xAA, stay in SEARCH_MAGIC2 (could be start of new frame)
-					break;
-
-				case FRAME_STATE_LENGTH_HIGH:
-					frame_length = (uint16_t)c << 8;
-					frame_state = FRAME_STATE_LENGTH_LOW;
-					break;
-
-				case FRAME_STATE_LENGTH_LOW:
-					frame_length |= c;
-					if (frame_length > sizeof(frame_buffer)) {
-						LOG_ERR("Frame too large: %d bytes", frame_length);
-						frame_state = FRAME_STATE_SEARCH_MAGIC1;
-					} else {
-						frame_state = FRAME_STATE_PAYLOAD;
-						frame_pos = 0;
-					}
-					break;
-
-				case FRAME_STATE_PAYLOAD:
-					frame_buffer[frame_pos++] = c;
-					if (frame_pos >= frame_length) {
-						frame_state = FRAME_STATE_CRC_HIGH;
-					}
-					break;
-
-				case FRAME_STATE_CRC_HIGH:
-					expected_crc = (uint16_t)c << 8;
-					frame_state = FRAME_STATE_CRC_LOW;
-					break;
-
-				case FRAME_STATE_CRC_LOW:
-					expected_crc |= c;
-
-					// Validate CRC
-					uint16_t calculated_crc = calculate_crc16(frame_buffer, frame_length);
-					if (calculated_crc != expected_crc) {
-						LOG_ERR("CRC mismatch: calc=0x%04X, expected=0x%04X", calculated_crc, expected_crc);
-						frame_state = FRAME_STATE_SEARCH_MAGIC1;
-						break;
-					}
-
-					// Valid framed packet received!
-					LOG_DBG("Framed packet RX: %d bytes", frame_length);
-
-					// Decode protobuf message
-					mouthware_message_AppToRelayMessage message;
-					pb_istream_t stream = pb_istream_from_buffer(frame_buffer, frame_length);
-					if (!pb_decode(&stream, mouthware_message_AppToRelayMessage_fields, &message)) {
-						LOG_ERR("Protobuf decode failed: %s", PB_GET_ERROR(&stream));
-						frame_state = FRAME_STATE_SEARCH_MAGIC1;
-						break;
-					}
-
-					// Handle message
+	int err = 0;
+	bool is_connected = ble_transport_is_connected();
+	uint8_t battery_level = ble_bas_get_battery_level();
+	int8_t rssi_dbm = is_connected ? ble_transport_get_rssi() : 0;
+	(void)err; (void)is_connected; (void)battery_level; (void)rssi_dbm;
 					switch (message.destination) {
 						case mouthware_message_AppToRelayMessageDestination_APP_RELAY_MESSAGE_DESTINATION_RELAY:
 							if (message.which_message_body == mouthware_message_AppToRelayMessage_ble_connection_status_read_tag) {
@@ -742,6 +531,244 @@ int main(void)
 							LOG_WRN("Invalid destination: %d", message.destination);
 							break;
 					}
+}
+
+int main(void)
+{
+	int err;
+
+	LOG_INF("=== MouthPad^USB Starting === Built: %s %s", __DATE__, __TIME__);
+
+	/* Initialize USB device stack (HID + CDC) */
+	LOG_INF("Initializing USB device stack...");
+	err = usb_init();
+	if (err != 0) {
+		LOG_ERR("usb_init failed (err %d)", err);
+		return 0;
+	}
+	LOG_INF("USB device stack initialized successfully");
+
+	/* Initialize USB CDC (get CDC0 device reference) */
+	LOG_INF("Initializing USB CDC...");
+	err = usb_cdc_init();
+	if (err != 0) {
+		LOG_ERR("usb_cdc_init failed (err %d)", err);
+		return 0;
+	}
+	LOG_INF("USB CDC initialized successfully");
+
+	/* Debug: Test HWINFO device ID reading */
+	uint8_t hwid[8];
+	ssize_t hwid_len = hwinfo_get_device_id(hwid, sizeof(hwid));
+	if (hwid_len > 0) {
+		LOG_INF("USB Serial Number: %02X%02X%02X%02X%02X%02X%02X%02X",
+			hwid[0], hwid[1], hwid[2], hwid[3],
+			hwid[4], hwid[5], hwid[6], hwid[7]);
+	} else {
+		LOG_ERR("HWINFO get_device_id failed: %d", hwid_len);
+	}
+
+	/* Initialize OLED Display */
+	err = oled_display_init();
+	if (err != 0) {
+		LOG_WRN("oled_display_init failed (err %d) - continuing without display", err);
+		/* Continue without display - it's not critical for core functionality */
+	} else {
+		/* Show splash screen with Augmental logo */
+		oled_display_splash_screen(2000);  /* Show logo for 2 seconds */
+	}
+
+	/* Initialize Passive Buzzer */
+	err = buzzer_init();
+	if (err != 0) {
+		LOG_WRN("buzzer_init failed (err %d) - continuing without buzzer", err);
+		/* Continue without buzzer - it's not critical for core functionality */
+	} else if (buzzer_is_available()) {
+		LOG_INF("Passive Buzzer initialized successfully");
+	}
+
+	/* Initialize BLE Transport */
+	LOG_INF("Initializing BLE Transport...");
+	err = ble_transport_init();
+	if (err != 0) {
+		LOG_ERR("ble_transport_init failed (err %d)", err);
+		return 0;
+	}
+	LOG_INF("BLE Transport initialized successfully");
+
+#if defined(CONFIG_BT_HIDS)
+	/* SFP-667: bring up the BLE HID peripheral output (re-expose the MouthPad's
+	 * HID over our own BLE link) and start advertising. Non-fatal: USB output
+	 * still works if this fails. */
+	err = ble_hids_init();
+	if (err != 0) {
+		LOG_ERR("ble_hids_init failed (err %d) — BLE HID output disabled", err);
+	} else {
+		LOG_INF("BLE HID peripheral output initialized");
+	}
+#endif
+
+	/* SFP-667: NUS server over BLE — carries the MouthpadRelay envelope proto so
+	 * a BLE host can stream MouthPad data + send relay commands (same protocol as
+	 * USB CDC). */
+	err = ble_nus_server_init();
+	if (err != 0) {
+		LOG_ERR("ble_nus_server_init failed (err %d) — BLE relay stream disabled", err);
+	} else {
+		LOG_INF("BLE NUS server initialized");
+	}
+
+	/* Register USB callbacks with BLE Transport */
+	ble_transport_register_usb_cdc_callback((usb_cdc_send_cb_t)mouthpad_nus_data_received_callback);
+	ble_transport_register_usb_hid_callback(usb_hid_data_callback);
+
+	/* Start bridging */
+	ble_transport_start_bridging();
+
+	LOG_INF("Starting USB ↔ BLE bridge (NUS + HID)");
+
+	/* Initialize LED subsystem */
+	LOG_INF("Initializing LED subsystem...");
+	err = leds_init();
+	if (err != 0) {
+		LOG_WRN("leds_init failed (err %d) - continuing without LEDs", err);
+		/* Continue without LEDs - not critical for core functionality */
+	} else {
+		LOG_INF("LED subsystem initialized successfully");
+		
+		/* Choose color mode based on LED hardware */
+		if (leds_has_neopixel()) {
+			/* NeoPixel supports smooth gradients */
+			leds_set_battery_color_mode(BAS_COLOR_MODE_GRADIENT);
+			LOG_INF("Using gradient mode for NeoPixel LEDs");
+		} else {
+			/* GPIO LEDs work better with discrete colors */
+			leds_set_battery_color_mode(BAS_COLOR_MODE_DISCRETE);
+			LOG_INF("Using discrete mode for GPIO LEDs");
+		}
+		
+		leds_set_state(LED_STATE_SCANNING);  /* Start in scanning state */
+	}
+	
+	/* Initialize User Button */
+	LOG_INF("Initializing user button...");
+	err = button_init();
+	if (err != 0) {
+		LOG_WRN("button_init failed (err %d) - continuing without button", err);
+		/* Continue without button - not critical for core functionality */
+	} else {
+		LOG_INF("User button initialized successfully");
+		button_register_callback(button_event_callback);
+	}
+	
+	static int display_update_counter = 0;
+
+	/* Reset display state after splash screen to ensure status updates work */
+	if (oled_display_is_available()) {
+		oled_display_reset_state();
+	}
+
+	/* Packet framing state machine for CDC RX */
+	enum {
+		FRAME_STATE_SEARCH_MAGIC1,  // Looking for 0xAA
+		FRAME_STATE_SEARCH_MAGIC2,  // Looking for 0x55
+		FRAME_STATE_LENGTH_HIGH,    // Reading length high byte
+		FRAME_STATE_LENGTH_LOW,     // Reading length low byte
+		FRAME_STATE_PAYLOAD,        // Reading payload
+		FRAME_STATE_CRC_HIGH,       // Reading CRC high byte
+		FRAME_STATE_CRC_LOW         // Reading CRC low byte
+	} frame_state = FRAME_STATE_SEARCH_MAGIC1;
+
+	static uint8_t frame_buffer[512];
+	static uint16_t frame_length = 0;
+	static uint16_t frame_pos = 0;
+	static uint16_t expected_crc = 0;
+
+	LOG_INF("Entering main loop...");
+
+	for (;;) {
+		/* USB CDC ↔ BLE NUS Bridge */
+
+		/* SFP-667: drain relay commands received over the BLE NUS server (raw
+		 * AppToRelayMessage, no framing) through the shared handler. */
+		static uint8_t nus_rx_buf[256];
+		uint16_t nus_rx_len;
+		while ((nus_rx_len = ble_nus_server_poll_rx(nus_rx_buf, sizeof(nus_rx_buf))) > 0) {
+			handle_app_to_relay_payload(nus_rx_buf, nus_rx_len);
+		}
+
+		/* Check BLE connection status and HID data activity */
+		bool is_connected = ble_transport_is_connected();
+		bool ble_hid_activity = ble_transport_has_hid_data_activity();
+		uint8_t battery_level = ble_bas_get_battery_level();
+		int8_t rssi_dbm = is_connected ? ble_transport_get_rssi() : 0;
+
+		// Check for data from USB CDC - parse framed packets [0xAA 0x55][len][payload][CRC]
+		uint8_t c;
+		int bytes_read = usb_cdc_receive_data(&c, 1);
+
+		if (bytes_read > 0) {
+			switch (frame_state) {
+				case FRAME_STATE_SEARCH_MAGIC1:
+					if (c == 0xAA) {
+						frame_state = FRAME_STATE_SEARCH_MAGIC2;
+					}
+					break;
+
+				case FRAME_STATE_SEARCH_MAGIC2:
+					if (c == 0x55) {
+						frame_state = FRAME_STATE_LENGTH_HIGH;
+						frame_pos = 0;
+					} else if (c != 0xAA) {
+						// Not magic byte sequence, restart search
+						frame_state = FRAME_STATE_SEARCH_MAGIC1;
+					}
+					// If c == 0xAA, stay in SEARCH_MAGIC2 (could be start of new frame)
+					break;
+
+				case FRAME_STATE_LENGTH_HIGH:
+					frame_length = (uint16_t)c << 8;
+					frame_state = FRAME_STATE_LENGTH_LOW;
+					break;
+
+				case FRAME_STATE_LENGTH_LOW:
+					frame_length |= c;
+					if (frame_length > sizeof(frame_buffer)) {
+						LOG_ERR("Frame too large: %d bytes", frame_length);
+						frame_state = FRAME_STATE_SEARCH_MAGIC1;
+					} else {
+						frame_state = FRAME_STATE_PAYLOAD;
+						frame_pos = 0;
+					}
+					break;
+
+				case FRAME_STATE_PAYLOAD:
+					frame_buffer[frame_pos++] = c;
+					if (frame_pos >= frame_length) {
+						frame_state = FRAME_STATE_CRC_HIGH;
+					}
+					break;
+
+				case FRAME_STATE_CRC_HIGH:
+					expected_crc = (uint16_t)c << 8;
+					frame_state = FRAME_STATE_CRC_LOW;
+					break;
+
+				case FRAME_STATE_CRC_LOW:
+					expected_crc |= c;
+
+					// Validate CRC
+					uint16_t calculated_crc = calculate_crc16(frame_buffer, frame_length);
+					if (calculated_crc != expected_crc) {
+						LOG_ERR("CRC mismatch: calc=0x%04X, expected=0x%04X", calculated_crc, expected_crc);
+						frame_state = FRAME_STATE_SEARCH_MAGIC1;
+						break;
+					}
+
+					// Valid framed packet received!
+					LOG_DBG("Framed packet RX: %d bytes", frame_length);
+
+					handle_app_to_relay_payload(frame_buffer, frame_length);
 
 					// Reset for next frame
 					frame_state = FRAME_STATE_SEARCH_MAGIC1;

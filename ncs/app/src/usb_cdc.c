@@ -14,6 +14,7 @@
 #include <zephyr/sys/ring_buffer.h>
 #include "MouthpadRelay.pb.h"
 #include "pb_encode.h"
+#include "ble_nus_server.h"  /* SFP-667: fan relay responses out to the BLE host */
 
 LOG_MODULE_REGISTER(usb_cdc, LOG_LEVEL_INF);
 
@@ -59,6 +60,12 @@ static void usb_cdc_async_work_handler(struct k_work *work)
 		LOG_ERR("Async encoding failed: %s\n", PB_GET_ERROR(&stream));
 	} else {
 		usb_cdc_send_data(dataPacket, stream.bytes_written);
+		/* SFP-667: also notify the BLE host (if connected) with the same encoded
+		 * RelayToAppMessage — raw, no framing (BLE packetizes). One fan-out point
+		 * for the stream and all relay responses. */
+		if (ble_nus_server_host_connected()) {
+			(void)ble_nus_server_send(dataPacket, stream.bytes_written);
+		}
 	}
 	
 	/* Free the async data */
