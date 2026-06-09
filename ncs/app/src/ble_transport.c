@@ -851,9 +851,19 @@ static void rssi_read_work_handler(struct k_work *work)
 		goto schedule_next;
 	}
 	
+	/* Use the real HCI connection handle, not bt_conn_index (an array index).
+	 * With multiple connections (OS HID host + companion + MouthPad) the index !=
+	 * handle, so Read_RSSI failed with -5 and last_known_rssi never refreshed. */
+	uint16_t conn_handle;
+	err = bt_hci_get_conn_handle(conn, &conn_handle);
+	if (err) {
+		LOG_ERR("Failed to get conn handle for RSSI (err %d)", err);
+		net_buf_unref(buf);
+		goto schedule_next;
+	}
 	cp = net_buf_add(buf, sizeof(*cp));
-	cp->handle = sys_cpu_to_le16(bt_conn_index(conn));
-	
+	cp->handle = sys_cpu_to_le16(conn_handle);
+
 	/* Send synchronous HCI Read RSSI command */
 	err = bt_hci_cmd_send_sync(BT_HCI_OP_READ_RSSI, buf, &rsp);
 	if (err) {
@@ -885,7 +895,24 @@ static void rssi_read_work_handler(struct k_work *work)
 	}
 	
 	last_known_rssi = new_rssi;
-	
+
+	/* SFP-667: push the freshly-read MouthPad-link RSSI to the host(s) as its own
+	 * BleConnectionStatusResponse (companion shows the live link signal). Reuses
+	 * the existing message + usb_cdc fan-out (USB CDC + BLE host); sent on each 2s
+	 * refresh, separate from the relayed sensor stream. */
+	{
+		mouthware_message_RelayToAppMessage status =
+			mouthware_message_RelayToAppMessage_init_zero;
+		status.which_message_body =
+			mouthware_message_RelayToAppMessage_ble_connection_status_response_tag;
+		status.message_body.ble_connection_status_response.connection_status =
+			mouthware_message_RelayBleConnectionStatus_RELAY_CONNECTION_STATUS_CONNECTED;
+		status.message_body.ble_connection_status_response.rssi = new_rssi;
+		status.message_body.ble_connection_status_response.battery_level =
+			ble_bas_get_battery_level();
+		(void)usb_cdc_send_proto_message_async(status);
+	}
+
 cleanup_and_schedule:
 	if (rsp) {
 		net_buf_unref(rsp);
