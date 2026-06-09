@@ -69,6 +69,7 @@ endforeach()
     src/oled_display.c
     src/buzzer.c
     src/leds.c
+    src/led_ktd2026.c
     src/button.c
     src/main.c
     src/mouthpad-proto/src/C/MouthpadRelay.pb.c

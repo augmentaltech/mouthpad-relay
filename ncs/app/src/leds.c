@@ -14,9 +14,19 @@
 
 #include "leds.h"
 #include "ble_bas.h"
+#include "led_ktd2026.h"
 
 #define LOG_MODULE_NAME leds
 LOG_MODULE_REGISTER(LOG_MODULE_NAME);
+
+/* KTD2026 I2C RGB LED driver (Vox/Dotto). Takes priority over NeoPixel/GPIO when
+ * the devicetree has an augmental,ktd2026 node. Dotto channel map: R=CH3, G=CH2,
+ * B=CH1. */
+#if DT_NODE_EXISTS(DT_NODELABEL(ktd2026))
+#define HAS_KTD2026 1
+#else
+#define HAS_KTD2026 0
+#endif
 
 /* NeoPixel support detection */
 #if DT_NODE_EXISTS(DT_NODELABEL(neopixel)) && \
@@ -31,7 +41,7 @@ static struct led_rgb neopixel_color = {0, 0, 0};
 #endif
 
 /* GPIO LED support detection */
-#if !HAS_NEOPIXEL
+#if !HAS_NEOPIXEL && !HAS_KTD2026
 #if DT_NODE_EXISTS(DT_ALIAS(led0)) && DT_NODE_HAS_PROP(DT_ALIAS(led0), gpios)
 static const struct gpio_dt_spec led_red = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
 static bool led_red_available = false;
@@ -73,7 +83,13 @@ int leds_init(void)
 
     LOG_INF("Initializing LED system...");
 
-#if HAS_NEOPIXEL
+#if HAS_KTD2026
+    ret = ktd2026_init();
+    if (ret == 0) {
+        leds_ready = true;
+        LOG_INF("Using KTD2026 I2C RGB LED driver");
+    }
+#elif HAS_NEOPIXEL
     /* Enable NeoPixel power via P1.14 (required for Adafruit Feather nRF52840) */
     const struct gpio_dt_spec neopixel_power = {
         .port = DEVICE_DT_GET(DT_NODELABEL(gpio1)),
@@ -214,9 +230,23 @@ bool leds_has_neopixel(void)
 
 /* Private function implementations */
 
+#if HAS_KTD2026
+/* Dotto channel map: red = CH3, green = CH2, blue = CH1. The relay's status
+ * colors are discrete (blue/green/red/off + gradient mixes), so drive each
+ * channel on/off by whether its component is non-zero. */
+static void set_ktd2026_color(ble_bas_rgb_color_t color)
+{
+    if (color.red > 0)   { ktd2026_channel_on(KTD2026_CH3); }  else { ktd2026_channel_off(KTD2026_CH3); }
+    if (color.green > 0) { ktd2026_channel_on(KTD2026_CH2); }  else { ktd2026_channel_off(KTD2026_CH2); }
+    if (color.blue > 0)  { ktd2026_channel_on(KTD2026_CH1); }  else { ktd2026_channel_off(KTD2026_CH1); }
+}
+#endif
+
 static void set_rgb_color(ble_bas_rgb_color_t color)
 {
-#if HAS_NEOPIXEL
+#if HAS_KTD2026
+    set_ktd2026_color(color);
+#elif HAS_NEOPIXEL
     set_neopixel_color(color);
 #else
     set_gpio_leds(color);
@@ -241,7 +271,7 @@ static void set_neopixel_color(ble_bas_rgb_color_t color)
 
 __maybe_unused static void set_gpio_leds(ble_bas_rgb_color_t color)
 {
-#if !HAS_NEOPIXEL
+#if !HAS_NEOPIXEL && !HAS_KTD2026
     /* GPIO_ACTIVE_LOW in devicetree handles inversion automatically */
 
     /* Detect if multiple LEDs share the same GPIO pin (single LED board) */
@@ -309,7 +339,7 @@ static int init_neopixel(void)
 
 __maybe_unused static int init_gpio_leds(void)
 {
-#if !HAS_NEOPIXEL
+#if !HAS_NEOPIXEL && !HAS_KTD2026
     int ret = 0;
     bool any_led_available = false;
 

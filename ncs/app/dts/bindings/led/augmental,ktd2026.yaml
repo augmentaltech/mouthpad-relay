@@ -1,0 +1,12 @@
+# Kinetic KTD2026 3-channel I2C RGB LED driver.
+# Driven by the app-level driver in src/led_ktd2026.c (no in-tree Zephyr driver),
+# so this binding only needs the I2C address; the channel→color mapping is fixed
+# in the driver per the Dotto board (red=CH3, green=CH2, blue=CH1).
+#
+# SPDX-License-Identifier: Apache-2.0
+
+description: Kinetic KTD2026 3-channel RGB LED driver
+
+compatible: "augmental,ktd2026"
+
+include: [i2c-device.yaml]

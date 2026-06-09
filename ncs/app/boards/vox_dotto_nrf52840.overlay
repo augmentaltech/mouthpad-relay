@@ -1,0 +1,67 @@
+/*
+ * Augmental Vox (Dotto) app integration overlay for MouthPad^USB.
+ * The board DTS provides the hardware (I2C0 + KTD2026 RGB LED, button, USB,
+ * ADC); this adds the app-facing nodes shared with the other targets:
+ *  - dual CDC ACM UARTs (cdc_acm_uart0 = NUS tunnel, cdc_acm_uart1 = console)
+ *  - the HID device
+ *  - a PWM + buzzer alias so buzzer.c builds (P0.4, spare; Dotto uses a haptic,
+ *    not a buzzer — wired up later). No physical buzzer.
+ */
+
+&pinctrl {
+	pwm1_default: pwm1_default {
+		group1 {
+			psels = <NRF_PSEL(PWM_OUT0, 0, 4)>;
+		};
+	};
+	pwm1_sleep: pwm1_sleep {
+		group1 {
+			psels = <NRF_PSEL(PWM_OUT0, 0, 4)>;
+			low-power-enable;
+		};
+	};
+};
+
+&pwm1 {
+	status = "okay";
+	pinctrl-0 = <&pwm1_default>;
+	pinctrl-1 = <&pwm1_sleep>;
+	pinctrl-names = "default", "sleep";
+};
+
+/ {
+	chosen {
+		nordic,nus-uart = &cdc_acm_uart0;
+		zephyr,console = &cdc_acm_uart1;
+		zephyr,shell-uart = &cdc_acm_uart1;
+	};
+
+	aliases {
+		buzzer-pwm = &pwm1;
+	};
+
+	hid_dev_0: hid_dev_0 {
+		compatible = "zephyr,hid-device";
+		label = "MouthPad^HID";
+		protocol-code = "mouse";
+		in-report-size = <64>;
+		in-polling-period-us = <1000>;
+	};
+
+	buzzer {
+		compatible = "pwm-buzzer";
+		pwms = <&pwm1 0 1000000 PWM_POLARITY_NORMAL>;
+		label = "Passive Buzzer";
+	};
+};
+
+&zephyr_udc0 {
+	cdc_acm_uart0: cdc_acm_uart0 {
+		compatible = "zephyr,cdc-acm-uart";
+		label = "CDC_ACM_0";
+	};
+	cdc_acm_uart1: cdc_acm_uart1 {
+		compatible = "zephyr,cdc-acm-uart";
+		label = "CDC_ACM_1";
+	};
+};

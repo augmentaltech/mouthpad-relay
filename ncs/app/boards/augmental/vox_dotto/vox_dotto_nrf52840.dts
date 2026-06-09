@@ -1,0 +1,86 @@
+/*
+ * Augmental Vox — Dotto 610-00006-1 (version 9903), nRF52840.
+ * Pin map per mouthpadv1 config_vox_dotto_610_6_1. Bring-up target: flashed flat
+ * over J-Link (no product bootloader yet). Only the RGB LED driver (KTD2026 over
+ * I2C) is wired up so far; the other Dotto peripherals (IMU, touch, barometer,
+ * PDM mic, haptic, battery ADC) are documented below but not yet enabled.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/dts-v1/;
+#include <nordic/nrf52840_qiaa.dtsi>
+#include <nordic/nrf52840_partition.dtsi>
+#include "vox_dotto_nrf52840-pinctrl.dtsi"
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+
+/ {
+	model = "Augmental Vox (Dotto 610-00006-1)";
+	compatible = "augmental,vox-dotto";
+
+	chosen {
+		zephyr,sram = &sram0;
+		zephyr,flash = &flash0;
+		zephyr,code-partition = &slot0_partition;
+	};
+
+	buttons {
+		compatible = "gpio-keys";
+
+		/* Dotto button_1: P0.31, ACTIVE_HIGH */
+		button0: button_0 {
+			gpios = <&gpio0 31 GPIO_ACTIVE_HIGH>;
+			label = "User button";
+			zephyr,code = <INPUT_KEY_0>;
+		};
+	};
+
+	aliases {
+		sw0 = &button0;
+		watchdog0 = &wdt0;
+	};
+};
+
+&reg0 {
+	status = "okay";
+};
+
+&reg1 {
+	regulator-initial-mode = <NRF5X_REG_MODE_DCDC>;
+};
+
+&gpiote {
+	status = "okay";
+};
+
+&gpio0 {
+	status = "okay";
+};
+
+&gpio1 {
+	status = "okay";
+};
+
+&adc {
+	status = "okay";
+};
+
+/* KTD2026 RGB LED driver: SCL P0.8 / SDA P0.6, I2C addr 0x32.
+ * Dotto channel map: red = CH3, green = CH2, blue = CH1. */
+&i2c0 {
+	compatible = "nordic,nrf-twi";
+	status = "okay";
+	pinctrl-0 = <&i2c0_default>;
+	pinctrl-1 = <&i2c0_sleep>;
+	pinctrl-names = "default", "sleep";
+
+	ktd2026: ktd2026@32 {
+		compatible = "augmental,ktd2026";
+		reg = <0x32>;
+	};
+};
+
+zephyr_udc0: &usbd {
+	compatible = "nordic,nrf-usbd";
+	status = "okay";
+};

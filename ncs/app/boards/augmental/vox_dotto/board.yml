@@ -1,0 +1,6 @@
+board:
+  name: vox_dotto
+  full_name: Augmental Vox (Dotto 610-00006-1)
+  vendor: augmental
+  socs:
+  - name: nrf52840
