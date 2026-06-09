@@ -38,6 +38,8 @@
 	aliases {
 		sw0 = &button0;
 		watchdog0 = &wdt0;
+		/* MCUboot serial-recovery entrance: hold this button at boot. */
+		mcuboot-button0 = &button0;
 	};
 };
 

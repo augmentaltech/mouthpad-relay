@@ -1,0 +1,19 @@
+/*
+ * MCUboot image DTS overlay (Vox/Dotto): give the bootloader its own USB CDC ACM
+ * so serial recovery (MCUBOOT_SERIAL + BOOT_SERIAL_CDC_ACM) has an
+ * interrupt-capable serial device. The app's CDC nodes don't apply to the
+ * bootloader image, so define one here and point uart-mcumgr at it. Only the
+ * vox_dotto build enables MCUboot, so this only affects that image.
+ */
+
+&zephyr_udc0 {
+	cdc_acm_uart0: cdc_acm_uart0 {
+		compatible = "zephyr,cdc-acm-uart";
+	};
+};
+
+/ {
+	chosen {
+		zephyr,uart-mcumgr = &cdc_acm_uart0;
+	};
+};
