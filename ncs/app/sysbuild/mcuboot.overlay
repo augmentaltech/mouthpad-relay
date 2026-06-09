@@ -6,6 +6,8 @@
  * vox_dotto build enables MCUboot, so this only affects that image.
  */
 
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
 &zephyr_udc0 {
 	cdc_acm_uart0: cdc_acm_uart0 {
 		compatible = "zephyr,cdc-acm-uart";
@@ -15,5 +17,23 @@
 / {
 	chosen {
 		zephyr,uart-mcumgr = &cdc_acm_uart0;
+	};
+
+	/* DK-ONLY: serial-recovery entrance on DK button1 (P0.11, active-low +
+	 * internal pull-up) instead of the Dotto button (P0.31 = AIN7), which floats
+	 * on the bare DK and false-triggers recovery. io_detect_pin reads the logical
+	 * value and applies the DT pull, so with the pull-up P0.11 reads inactive when
+	 * released → boots the app; hold button1 at boot to enter DFU. Remove this
+	 * override for real Dotto (board DTS already aliases mcuboot-button0 = P0.31). */
+	dk_dfu_keys {
+		compatible = "gpio-keys";
+		dk_dfu_button: dk_dfu_button {
+			gpios = <&gpio0 11 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+			label = "DK DFU entrance (button1)";
+		};
+	};
+
+	aliases {
+		mcuboot-button0 = &dk_dfu_button;
 	};
 };
