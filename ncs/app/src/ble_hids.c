@@ -138,6 +138,12 @@ static void hids_connected(struct bt_conn *conn, uint8_t err)
 	if (e) {
 		LOG_WRN("bt_conn_set_security failed (err %d)", e);
 	}
+
+	/* SFP-667: re-arm advertising so a SECOND host can connect (BT_MAX_CONN=8).
+	 * The relay serves both the OS HID stack and the companion app (NUS) at once;
+	 * without this the advertiser stops on the first connect and the companion can
+	 * never find the relay once the OS HID host has grabbed it. */
+	advertising_start();
 }
 
 static void hids_disconnected(struct bt_conn *conn, uint8_t reason)

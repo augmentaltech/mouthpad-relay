@@ -36,19 +36,24 @@ static bool nus_client_ready = false;
 static bool mtu_exchange_complete = false;
 static bool bridging_started = false;
 
-/* SFP-667: app→MouthPad writes (companion StartStream/DataStreamConfig) can
- * arrive before the relay's central NUS link to the MouthPad is up — the host
- * attaches, the relay starts scanning, and the companion sends config in the
- * gap before connection completes. Buffer a few and flush once nus_client_ready
- * so the initial stream config isn't lost. Cleared on MouthPad disconnect. */
-#define PENDING_NUS_MAX_MSGS 8
-#define PENDING_NUS_MSG_SIZE 256
-struct pending_nus_msg {
+/* SFP-667: app→MouthPad write queue with single-in-flight flow control.
+ * bt_nus_client allows only ONE outstanding write at a time — firing the next
+ * before the previous completes returns -EALREADY (-120) and silently DROPS the
+ * command (this lost control-mode/profile/pause writes through the relay). So
+ * queue writes here and send the next only after the prior one's `sent` callback.
+ * The queue also covers the gap before the central NUS link is up (writes wait,
+ * drained on discovery-complete). Cleared on MouthPad disconnect. */
+#define TX_Q_MAX_MSGS 24
+#define TX_Q_MSG_SIZE 256
+struct tx_q_msg {
 	uint16_t len;
-	uint8_t data[PENDING_NUS_MSG_SIZE];
+	uint8_t data[TX_Q_MSG_SIZE];
 };
-static struct pending_nus_msg pending_nus[PENDING_NUS_MAX_MSGS];
-static uint8_t pending_nus_count;
+static struct tx_q_msg tx_q[TX_Q_MAX_MSGS];
+static uint8_t tx_q_head;   /* index of next msg to send */
+static uint8_t tx_q_count;  /* messages queued */
+static bool tx_in_flight;   /* a write is awaiting its sent callback */
+K_MUTEX_DEFINE(tx_q_lock);
 
 /* HID Bridge state */
 static bool hid_client_ready = false;
@@ -81,6 +86,8 @@ static ble_ready_callback_t hid_ready_callback = NULL;
 
 /* Internal callback functions */
 static void ble_nus_data_received_cb(const uint8_t *data, uint16_t len);
+static void nus_tx_sent_cb(uint8_t err);
+static void tx_drain(void);
 static void rssi_read_work_handler(struct k_work *work);
 static void dis_discovery_complete_cb(struct bt_conn *conn);
 static void ble_nus_discovery_complete_cb(void);
@@ -161,6 +168,7 @@ int ble_transport_init(void)
 
 	/* Register NUS Client callbacks */
 	ble_nus_client_register_data_received_cb(ble_nus_data_received_cb);
+	ble_nus_client_register_data_sent_cb(nus_tx_sent_cb);
 	ble_nus_client_register_discovery_complete_cb(ble_nus_discovery_complete_cb);
 	ble_nus_client_register_mtu_exchange_cb(ble_nus_mtu_exchange_cb);
 	
@@ -288,31 +296,60 @@ int ble_transport_start_bridging(void)
 	return 0;
 }
 
+/* Send the next queued app→MouthPad write, if the link is ready and no write is
+ * in flight. Called after enqueue, on discovery-complete, and from the sent cb. */
+static void tx_drain(void)
+{
+	k_mutex_lock(&tx_q_lock, K_FOREVER);
+	if (tx_in_flight || !nus_client_ready || tx_q_count == 0) {
+		k_mutex_unlock(&tx_q_lock);
+		return;
+	}
+	struct tx_q_msg *m = &tx_q[tx_q_head];
+	int err = ble_nus_client_send_data(m->data, m->len);
+	if (err == 0) {
+		tx_in_flight = true;
+		tx_q_head = (tx_q_head + 1) % TX_Q_MAX_MSGS;
+		tx_q_count--;
+		data_activity = true;
+	} else {
+		/* A write is still settling (e.g. -EALREADY); its sent cb will re-drain. */
+		LOG_DBG("tx_drain: send returned %d, will retry on next event", err);
+	}
+	k_mutex_unlock(&tx_q_lock);
+}
+
+/* bt_nus_client `sent` callback: previous write completed, send the next. */
+static void nus_tx_sent_cb(uint8_t err)
+{
+	if (err) {
+		LOG_WRN("NUS client in-flight write failed (err %d)", err);
+	}
+	k_mutex_lock(&tx_q_lock, K_FOREVER);
+	tx_in_flight = false;
+	k_mutex_unlock(&tx_q_lock);
+	tx_drain();
+}
+
 int ble_transport_send_nus_data(const uint8_t *data, uint16_t len)
 {
-	if (!nus_client_ready) {
-		/* Buffer until the MouthPad link is ready (flushed in discovery cb). */
-		if (len <= PENDING_NUS_MSG_SIZE && pending_nus_count < PENDING_NUS_MAX_MSGS) {
-			struct pending_nus_msg *m = &pending_nus[pending_nus_count++];
-			m->len = len;
-			memcpy(m->data, data, len);
-			LOG_INF("MouthPad NUS not ready — buffered %u bytes (%u queued)",
-				len, pending_nus_count);
-			return 0;
-		}
-		LOG_WRN("NUS client not ready, pending buffer full — dropping %u bytes", len);
-		return -ENOTCONN;
+	if (len > TX_Q_MSG_SIZE) {
+		LOG_WRN("app→MouthPad msg %u > %u, dropping", len, TX_Q_MSG_SIZE);
+		return -EMSGSIZE;
 	}
-
-	LOG_INF("BLE Transport sending %d bytes to NUS", len);
-	int err = ble_nus_client_send_data(data, len);
-	if (err) {
-		LOG_ERR("BLE Transport send failed: %d", err);
-	} else {
-		LOG_INF("BLE Transport send successful");
-		data_activity = true;  // Mark data activity for LED indication
+	k_mutex_lock(&tx_q_lock, K_FOREVER);
+	if (tx_q_count >= TX_Q_MAX_MSGS) {
+		k_mutex_unlock(&tx_q_lock);
+		LOG_WRN("app→MouthPad TX queue full (%u) — dropping %u bytes", TX_Q_MAX_MSGS, len);
+		return -ENOBUFS;
 	}
-	return err;
+	uint8_t tail = (tx_q_head + tx_q_count) % TX_Q_MAX_MSGS;
+	tx_q[tail].len = len;
+	memcpy(tx_q[tail].data, data, len);
+	tx_q_count++;
+	k_mutex_unlock(&tx_q_lock);
+	tx_drain();  /* sends now if the link is up & idle; otherwise drained later */
+	return 0;
 }
 
 bool ble_transport_is_nus_ready(void)
@@ -417,17 +454,8 @@ static void ble_nus_discovery_complete_cb(void)
 	nus_client_ready = true;
 	LOG_INF("NUS client ready - bridge operational");
 
-	/* SFP-667: flush any app→MouthPad writes buffered before the link was up. */
-	if (pending_nus_count > 0) {
-		LOG_INF("Flushing %u pending NUS msg(s) to MouthPad", pending_nus_count);
-		for (uint8_t i = 0; i < pending_nus_count; i++) {
-			int err = ble_nus_client_send_data(pending_nus[i].data, pending_nus[i].len);
-			if (err) {
-				LOG_WRN("Flush pending NUS %u failed: %d", i, err);
-			}
-		}
-		pending_nus_count = 0;
-	}
+	/* SFP-667: link is up — drain any app→MouthPad writes queued during connect. */
+	tx_drain();
 
 	/* Trigger HID discovery after NUS discovery completes */
 	nus_discovery_completed_cb();
@@ -643,9 +671,13 @@ static void ble_central_disconnected_cb(struct bt_conn *conn, uint8_t reason)
 	nus_client_ready = false;
 	hid_client_ready = false;
 	hid_discovery_complete = false;
-	/* SFP-667: drop any app→MouthPad writes buffered for the link that just died;
+	/* SFP-667: drop any app→MouthPad writes queued for the link that just died;
 	 * they belong to the previous session. */
-	pending_nus_count = 0;
+	k_mutex_lock(&tx_q_lock, K_FOREVER);
+	tx_q_head = 0;
+	tx_q_count = 0;
+	tx_in_flight = false;
+	k_mutex_unlock(&tx_q_lock);
 
 	/* Stop periodic RSSI reading */
 	rssi_reading_active = false;
