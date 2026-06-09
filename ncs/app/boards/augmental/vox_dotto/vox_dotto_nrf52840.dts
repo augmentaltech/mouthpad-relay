@@ -27,9 +27,13 @@
 	buttons {
 		compatible = "gpio-keys";
 
-		/* Dotto button_1: P0.31, ACTIVE_HIGH */
+		/* Dotto button_1: P0.31, ACTIVE_HIGH. Pull-down so the pin reads
+		 * inactive (not-pressed) when released — without it a floating pin
+		 * (e.g. on the bare DK, where P0.31 isn't a button) reads high and
+		 * MCUboot's GPIO serial-recovery entrance traps the device in DFU
+		 * instead of booting the app. */
 		button0: button_0 {
-			gpios = <&gpio0 31 GPIO_ACTIVE_HIGH>;
+			gpios = <&gpio0 31 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
 			label = "User button";
 			zephyr,code = <INPUT_KEY_0>;
 		};
