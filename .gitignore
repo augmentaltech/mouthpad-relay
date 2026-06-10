@@ -130,3 +130,4 @@ esp/managed_components/
 esp/build/
 ncs/build_dotto/
 ncs/build_dk/
+ncs/build_uf2/

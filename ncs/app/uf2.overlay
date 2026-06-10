@@ -1,0 +1,42 @@
+/*
+ * SFP-667 (a): flash layout for running under the Adafruit nRF52 UF2 bootloader.
+ * Matches Zephyr's nrf52840_partition_uf2_sdv6 (S140 v6 + UF2):
+ *   0x00000  SoftDevice region   152 KB  (reserved by the bootloader; unused by
+ *                                         this Zephyr app, which has no SoftDevice)
+ *   0x26000  Application        ~792 KB
+ *   0xEC000  Storage             32 KB   (BLE bonds; untouched by app .uf2)
+ *   0xF4000  UF2 bootloader      48 KB
+ * Applied only to the UF2 build (EXTRA_DTC_OVERLAY_FILE); the flat J-Link build
+ * keeps the default app@0 layout.
+ */
+/ {
+	chosen {
+		zephyr,code-partition = &slot0_partition;
+	};
+};
+
+&flash0 {
+	/delete-node/ partitions;
+
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		slot0_partition: partition@26000 {
+			label = "image-0";
+			reg = <0x00026000 0x000c6000>;
+		};
+
+		storage_partition: partition@ec000 {
+			label = "storage";
+			reg = <0x000ec000 0x00008000>;
+		};
+
+		boot_partition: partition@f4000 {
+			label = "UF2";
+			read-only;
+			reg = <0x000f4000 0x0000c000>;
+		};
+	};
+};

@@ -1,0 +1,29 @@
+# SFP-667 (a): Partition Manager layout for the UF2 / Adafruit nRF52 bootloader
+# build (S140 v6, app @ 0x26000). Mirrors nrf52840_partition_uf2_sdv6.dtsi, the
+# same way Zephyr's xiao_ble board ships a pm_static.yml.
+#
+# Without this, NCS Partition Manager auto-places settings_storage (BLE bonds
+# NVS) at 0xFE000 — INSIDE the bootloader region (0xF4000-0x100000) — so BT
+# settings init clobbers/overlaps the bootloader and BLE never comes up. This
+# puts settings at 0xEC000 (before the bootloader) and reserves the UF2 region.
+# Applied only to the UF2 build via -DPM_STATIC_YML_FILE.
+
+softdevice_reserved:
+  address: 0x00000
+  size: 0x26000
+  region: flash_primary
+
+app:
+  address: 0x26000
+  size: 0xC6000
+  region: flash_primary
+
+settings_storage:
+  address: 0xEC000
+  size: 0x8000
+  region: flash_primary
+
+uf2_partition:
+  address: 0xF4000
+  size: 0xC000
+  region: flash_primary
