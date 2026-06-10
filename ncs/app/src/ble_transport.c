@@ -432,14 +432,16 @@ static void ble_nus_data_received_cb(const uint8_t *data, uint16_t len)
 	last_data_time = k_uptime_get();
 	LOG_DBG("=== DATA ACTIVITY MARKED ===");
 	
-	// Bridge NUS data directly to USB CDC (raw, framed)
+	// Forward the MouthPad packet to BOTH transports via the single fan-out
+	// point: usb_cdc_send_callback -> mouthpad_nus_data_received_callback ->
+	// usb_cdc_send_proto_message_async, which wraps it in a
+	// RelayToAppMessage{PassThroughToApp} and sends to USB CDC *and* the BLE
+	// host. (Previously this also called usb_cdc_send_passthrough_to_app_ble,
+	// which sent a SECOND copy to the BLE host -> every sensor packet was
+	// delivered to the app twice. Dropped.)
 	if (usb_cdc_send_callback) {
 		usb_cdc_send_callback(data, len);
 	}
-
-	// SFP-667: also deliver to the BLE relay host wrapped in the envelope
-	// protocol (RelayToAppMessage{PassThroughToApp}). No-op if no BLE host.
-	(void)usb_cdc_send_passthrough_to_app_ble(data, len);
 }
 
 static void ble_nus_mtu_exchange_cb(uint16_t mtu)
