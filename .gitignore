@@ -128,3 +128,5 @@ local.conf.backup
 # ESP-IDF managed components (auto-downloaded from registry)
 esp/managed_components/
 esp/build/
+ncs/build_dotto/
+ncs/build_dk/

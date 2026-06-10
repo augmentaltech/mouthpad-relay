@@ -27,6 +27,7 @@
 #include "buzzer.h"
 #include "leds.h"
 #include "button.h"
+#include "relay_mic.h"
 #include "MouthpadRelay.pb.h"
 #include "pb_decode.h"
 #include "pb_encode.h"
@@ -510,6 +511,17 @@ static void handle_app_to_relay_payload(const uint8_t *buf, uint16_t len)
 
 								/* Perform system reset */
 								NVIC_SystemReset();
+							} else if (message.which_message_body == mouthware_message_AppToRelayMessage_set_microphone_params_tag) {
+								/* SFP-667 (c): control the relay's OWN mic. enable_channel_0
+								 * starts/stops the Opus stream; gain is forwarded for parity. */
+								const mouthware_message_SetMicrophoneParams *mp =
+									&message.message_body.set_microphone_params;
+								LOG_INF("RELAY mic params: ch0=%d gain=%u", mp->enable_channel_0, mp->gain);
+								if (mp->enable_channel_0) {
+									relay_mic_start((uint8_t)mp->gain);
+								} else {
+									relay_mic_stop();
+								}
 							}
 							break;
 
@@ -617,6 +629,9 @@ int main(void)
 	} else {
 		LOG_INF("BLE NUS server initialized");
 	}
+
+	/* SFP-667 (c): init the relay's own Opus mic encoder (streams on request). */
+	relay_mic_init();
 
 	/* Register USB callbacks with BLE Transport */
 	ble_transport_register_usb_cdc_callback((usb_cdc_send_cb_t)mouthpad_nus_data_received_callback);

@@ -39,7 +39,11 @@ endif()
 target_include_directories(app PRIVATE
   src/mouthpad-proto/nanopb
   src/mouthpad-proto/src/C
+  src/opus-1.2.1
 )
+
+# SFP-667 (c): Opus encoder (scoped Zephyr library, CELT-only fixed-point).
+include(opus.cmake)
 
 # usb_hid.c includes <nrf.h> (MDK SoC registers: NRF_POWER/NRF_USBD). Zephyr puts
 # the MDK on the include path for its own libs but not always the app target, and
@@ -71,8 +75,10 @@ endforeach()
     src/leds.c
     src/led_ktd2026.c
     src/button.c
+    src/relay_mic.c
     src/main.c
     src/mouthpad-proto/src/C/MouthpadRelay.pb.c
+    src/mouthpad-proto/src/C/Microphone.pb.c
     src/mouthpad-proto/nanopb/pb_common.c
     src/mouthpad-proto/nanopb/pb_decode.c
     src/mouthpad-proto/nanopb/pb_encode.c

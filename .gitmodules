@@ -1,0 +1,6 @@
+[submodule "ncs/app/src/mouthpad-proto"]
+	path = ncs/app/src/mouthpad-proto
+	url = ssh://git@github.com/augmentaltech/mouthpad-proto
+[submodule "ncs/app/src/opus-1.2.1"]
+	path = ncs/app/src/opus-1.2.1
+	url = ssh://git@github.com/augmentaltech/opus-audio-encoder
