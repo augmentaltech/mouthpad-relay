@@ -80,6 +80,15 @@
 	};
 };
 
+/* PDM microphone (Dotto): CLK P0.05 / DIN P0.26. Driven via the Zephyr DMIC
+ * API (nrfx PDM) for the relay's own mic stream. */
+&pdm0 {
+	status = "okay";
+	pinctrl-0 = <&pdm0_default>;
+	pinctrl-names = "default";
+	clock-source = "PCLK32M_HFXO";
+};
+
 zephyr_udc0: &usbd {
 	compatible = "nordic,nrf-usbd";
 	status = "okay";

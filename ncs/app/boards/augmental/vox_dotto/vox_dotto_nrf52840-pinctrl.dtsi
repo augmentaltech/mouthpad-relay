@@ -19,4 +19,12 @@
 			low-power-enable;
 		};
 	};
+
+	/* PDM microphone: CLK P0.05, DIN P0.26 (per config_vox_dotto_610_6_1). */
+	pdm0_default: pdm0_default {
+		group1 {
+			psels = <NRF_PSEL(PDM_CLK, 0, 5)>,
+				<NRF_PSEL(PDM_DIN, 0, 26)>;
+		};
+	};
 };
