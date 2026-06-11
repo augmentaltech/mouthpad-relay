@@ -76,6 +76,7 @@ endforeach()
     src/led_ktd2026.c
     src/button.c
     src/relay_mic.c
+    src/sim_hid_relay.c
     src/main.c
     src/mouthpad-proto/src/C/MouthpadRelay.pb.c
     src/mouthpad-proto/src/C/Microphone.pb.c

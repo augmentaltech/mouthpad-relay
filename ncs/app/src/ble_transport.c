@@ -18,6 +18,7 @@
 
 #include "ble_transport.h"
 #include "ble_central.h"
+#include "sim_hid_relay.h"
 #include "ble_nus_client.h"
 #include "ble_hid.h"
 #include "ble_bas.h"
@@ -111,6 +112,13 @@ static void nus_discovery_completed_cb(void)
 		const bt_addr_le_t *addr = bt_conn_get_dst(conn);
 		extern void ble_dis_load_cache_for_connected_device(const bt_addr_le_t *addr);
 		ble_dis_load_cache_for_connected_device(addr);
+	}
+
+	/* SFP-657 Option B: a sim has no HOGP — instead subscribe to its custom HID
+	 * char now that the primary GATT discovery is done, and normalize its reports
+	 * into our HOGP peripheral. */
+	if (conn && ble_central_is_sim_link()) {
+		sim_hid_relay_start(conn);
 	}
 
 	/* Check if we have cached firmware version from previous connection */
@@ -661,6 +669,9 @@ static void ble_central_disconnected_cb(struct bt_conn *conn, uint8_t reason)
 	ARG_UNUSED(conn);
 
 	LOG_INF("BLE Central disconnected (reason: 0x%02x) - cleaning up and resetting states", reason);
+
+	/* SFP-657: stop sim HID forwarding (no-op for a MouthPad link). */
+	sim_hid_relay_stop();
 
 	/* FIRST: Send USB HID release-all report immediately to prevent stuck inputs */
 	LOG_INF("Sending USB HID release-all to clear any stuck inputs");
