@@ -632,13 +632,22 @@ static void ble_central_connected_cb(struct bt_conn *conn)
 		LOG_INF("MTU exchange initiated successfully");
 	}
 
-	err = bt_conn_set_security(conn, BT_SECURITY_L2);
-	if (err) {
-		LOG_WRN("Failed to set security: %d", err);
+	/* SFP-657: the iOS sim has no pairing — its GATT is plaintext. Requesting L2
+	 * security makes iOS drop the link (reason 0x13). Skip it for a sim link and
+	 * go straight to discovery at security level 1. */
+	if (ble_central_is_sim_link()) {
+		LOG_INF("Sim link — skipping L2 security, discovering at level 1");
 		gatt_discover(conn);
-	} else {
-		LOG_INF("Security setup successful");
-		gatt_discover(conn);
+	} else
+	{
+		err = bt_conn_set_security(conn, BT_SECURITY_L2);
+		if (err) {
+			LOG_WRN("Failed to set security: %d", err);
+			gatt_discover(conn);
+		} else {
+			LOG_INF("Security setup successful");
+			gatt_discover(conn);
+		}
 	}
 
 	/* Start periodic RSSI reading */

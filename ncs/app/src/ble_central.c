@@ -38,6 +38,12 @@ static struct bt_conn *default_conn;
 static struct k_work scan_work;
 static struct k_work_delayable scan_indicator_work;
 static enum ble_central_state connection_state = BLE_CENTRAL_STATE_DISCONNECTED;
+/* The current central link is the iOS sim (no pairing; plaintext GATT). Set when
+ * connecting to the sim, cleared when connecting to a MouthPad or on disconnect.
+ * Lets ble_transport skip the L2 security request that the sim can't satisfy.
+ * Always false unless the RELAY_PROBE_IOS_SIM sim-accept path set it. */
+static bool m_link_is_sim = false;
+bool ble_central_is_sim_link(void) { return m_link_is_sim; }
 
 /* Scanning mode for multi-bond support */
 typedef enum {
@@ -58,6 +64,17 @@ static int64_t additional_scan_start_time = 0;
  * tools/read_ble_mac.sh. TL_MPMPMPMP DK = EA:6B:09:76:D4:BE. Set to "" to disable. */
 #define RELAY_TARGET_MOUTHPAD_ADDR "EA:6B:09:76:D4:BE"
 
+/* SFP-657 probe: also try to connect to the iOS MouthPad simulator, which has
+ * NO HID service + no MouthPad mfr data — it advertises NUS + a custom identity
+ * service (6E40FF00...). iOS only surfaces those overflowed 128-bit UUIDs to a
+ * central that scans for them explicitly, so we add the identity UUID to the scan
+ * filter and accept on (NUS + identity), bypassing the HID/mfr/addr-pin checks.
+ * Bring-up only — gates whether the sim accepts an nRF central link at all. */
+#define RELAY_PROBE_IOS_SIM 1
+#define BT_UUID_SIM_IDENTITY_VAL \
+	BT_UUID_128_ENCODE(0x6e40ff00, 0xb5a3, 0xf393, 0xe0a9, 0xe50e24dcca9e)
+#define BT_UUID_SIM_IDENTITY BT_UUID_DECLARE_128(BT_UUID_SIM_IDENTITY_VAL)
+
 /* Track if any bonded devices are advertising in current scan session */
 static bool bonded_device_seen_advertising = false;
 
@@ -74,6 +91,7 @@ struct device_uuid_state {
 	bool has_hid;
 	bool has_nus;
 	bool has_mfr_data;
+	bool has_sim;   /* SFP-657 probe: iOS MouthPad simulator identity service seen */
 	int8_t rssi;
 	int64_t timestamp;
 };
@@ -85,6 +103,9 @@ static K_MUTEX_DEFINE(tracked_devices_mutex);
 static bool is_nus_device(const struct bt_scan_device_info *device_info);
 static bool is_hid_device(const struct bt_scan_device_info *device_info);
 static bool is_mouthpad_manufacturer_data(const struct bt_scan_device_info *device_info);
+#ifdef RELAY_PROBE_IOS_SIM
+static bool is_sim_device(const struct bt_scan_device_info *device_info);
+#endif
 
 /* Callback functions for external modules */
 static ble_central_connected_cb_t connected_cb;
@@ -243,6 +264,9 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 
 	/* Update state to disconnected */
 	connection_state = BLE_CENTRAL_STATE_DISCONNECTED;
+#ifdef RELAY_PROBE_IOS_SIM
+	m_link_is_sim = false;
+#endif
 	LOG_INF("*** STATE SET TO DISCONNECTED (device disconnected) ***");
 
 	/* Stop any background scanning */
@@ -386,6 +410,48 @@ static void scan_filter_match(struct bt_scan_device_info *device_info,
 	if (has_hid) dev_state->has_hid = true;
 	if (has_nus) dev_state->has_nus = true;
 	if (is_mouthpad_manufacturer_data(device_info)) dev_state->has_mfr_data = true;
+#ifdef RELAY_PROBE_IOS_SIM
+	if (is_sim_device(device_info)) dev_state->has_sim = true;
+	/* Diagnostic + name-based sim match. iOS may carry the name/UUID in the SCAN
+	 * RESPONSE (a non-connectable report), so do this BEFORE the connectable gate
+	 * — the device is still connectable by address. */
+	{
+		char nm[32] = {0};
+		(void)extract_device_name_from_scan(device_info, nm, sizeof(nm));
+		if (nm[0] != '\0') {
+			LOG_INF("SCAN saw '%s' [%s] conn=%d nus=%d hid=%d sim=%d",
+				nm, addr, connectable, dev_state->has_nus,
+				dev_state->has_hid, dev_state->has_sim);
+		}
+		if (strstr(nm, "PhonePad") != NULL) {
+			dev_state->has_sim = true;
+		}
+	}
+	if (dev_state->has_sim && connection_state == BLE_CENTRAL_STATE_SCANNING) {
+		connection_state = BLE_CENTRAL_STATE_CONNECTING;
+		m_link_is_sim = true;   /* skip the L2 security request the sim can't do */
+		LOG_INF("*** STATE SET TO CONNECTING (iOS SIM probe) ***");
+		LOG_INF("iOS MouthPad SIM found: %s (RSSI: %d dBm) — connecting", addr, rssi);
+		extern void ble_transport_set_rssi(int8_t rssi);
+		ble_transport_set_rssi(rssi);
+		int serr = bt_scan_stop();
+		if (serr) {
+			LOG_WRN("bt_scan_stop before sim connect (err %d)", serr);
+		}
+		struct bt_conn *conn = NULL;
+		struct bt_le_conn_param *cp = BT_LE_CONN_PARAM_DEFAULT;
+		int cerr = bt_conn_le_create(device_info->recv_info->addr,
+					     BT_CONN_LE_CREATE_CONN, cp, &conn);
+		if (cerr) {
+			LOG_ERR("sim bt_conn_le_create failed (err %d) — resuming scan", cerr);
+			connection_state = BLE_CENTRAL_STATE_SCANNING;
+			(void)bt_scan_start(BT_SCAN_TYPE_SCAN_ACTIVE);
+		} else if (conn) {
+			bt_conn_unref(conn);
+		}
+		return;
+	}
+#endif
 	dev_state->rssi = rssi;
 	dev_state->timestamp = k_uptime_get();
 
@@ -420,6 +486,9 @@ static void scan_filter_match(struct bt_scan_device_info *device_info,
 	/* CRITICAL: Set connecting state IMMEDIATELY before any logging or processing
 	 * This ensures status queries return CONNECTING as soon as we decide to connect */
 	connection_state = BLE_CENTRAL_STATE_CONNECTING;
+#ifdef RELAY_PROBE_IOS_SIM
+	m_link_is_sim = false;   /* MouthPad link: normal L2 security applies */
+#endif
 	LOG_INF("*** STATE SET TO CONNECTING ***");
 
 	/* Device has both services - log and proceed with connection */
@@ -865,6 +934,27 @@ static bool is_nus_device(const struct bt_scan_device_info *device_info)
 	return ctx.found;
 }
 
+#ifdef RELAY_PROBE_IOS_SIM
+static bool is_sim_device(const struct bt_scan_device_info *device_info)
+{
+	/* Check if the iOS-simulator identity service UUID (6E40FF00...) is present. */
+	struct bt_uuid_128 sim_uuid = BT_UUID_INIT_128(BT_UUID_SIM_IDENTITY_VAL);
+	struct uuid_search_context ctx = {
+		.found = false,
+		.target_uuid = (const struct bt_uuid *)&sim_uuid,
+	};
+
+	if (device_info->adv_data) {
+		struct net_buf_simple_state state;
+		net_buf_simple_save(device_info->adv_data, &state);
+		bt_data_parse(device_info->adv_data, uuid_search_cb, &ctx);
+		net_buf_simple_restore(device_info->adv_data, &state);
+	}
+
+	return ctx.found;
+}
+#endif /* RELAY_PROBE_IOS_SIM */
+
 static bool is_hid_device(const struct bt_scan_device_info *device_info)
 {
 	/* Check if HID service UUID is present in advertising data */
@@ -1021,6 +1111,21 @@ int ble_central_start_scan(void)
 		LOG_ERR("Cannot add NUS UUID scan filter (err %d)", err);
 		return err;
 	}
+
+#ifdef RELAY_PROBE_IOS_SIM
+	/* Scan explicitly for the iOS sim identity service so iOS surfaces it. */
+	err = bt_scan_filter_add(BT_SCAN_FILTER_TYPE_UUID, BT_UUID_SIM_IDENTITY);
+	if (err) {
+		LOG_ERR("Cannot add sim identity UUID scan filter (err %d)", err);
+		return err;
+	}
+	/* Also match the sim by advertised name — the reliable discriminator. */
+	err = bt_scan_filter_add(BT_SCAN_FILTER_TYPE_NAME, "PhonePad");
+	if (err) {
+		LOG_ERR("Cannot add sim name scan filter (err %d)", err);
+		return err;
+	}
+#endif
 
 	/* Enable UUID filters - bond checking happens in scan_filter_match */
 	if (scan_mode == SCAN_MODE_ADDITIONAL) {
