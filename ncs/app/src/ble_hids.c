@@ -233,8 +233,9 @@ int ble_hids_send_report(uint8_t report_id, const uint8_t *data, uint16_t len)
 		return -EINVAL;
 	}
 
-	/* Returns an error until the host enables this report's CCCD; callers
-	 * treat that as benign. */
+	/* Returns -ENOMEM until the host enables this report's CCCD or when the BLE
+	 * TX buffers are momentarily exhausted under fast motion; callers treat that
+	 * as benign (the report is simply dropped). */
 	return bt_hids_inp_rep_send(&hids_obj, m_host_conn, idx, data, len, NULL);
 }
 

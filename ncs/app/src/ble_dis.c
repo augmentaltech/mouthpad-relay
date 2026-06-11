@@ -577,6 +577,15 @@ static void process_device_name(const void *data, uint16_t length, uint16_t offs
 }
 
 static void verify_device_identity(dis_read_step_t *step) {
+	/* SFP-657: the iOS sim is a development peripheral with its own DIS identity
+	 * ("PhonePad^"), not a genuine MouthPad. Skip the MouthPad identity gate for a
+	 * sim link so it isn't disconnected/unpaired. */
+	if (ble_central_is_sim_link()) {
+		LOG_INF("Sim link — skipping MouthPad DIS identity check");
+		advance_read_pipeline(step + 1);
+		return;
+	}
+
 	bool mfr_ok = device_info.has_manufacturer_name &&
 				  strcmp(device_info.manufacturer_name, DIS_EXPECTED_MANUFACTURER_NAME) == 0;
 	bool model_ok = device_info.has_model_number &&

@@ -559,7 +559,15 @@ static void dis_discovery_complete_cb(struct bt_conn *conn)
 		LOG_INF("DIS discovery complete (background refresh - already CONNECTED via cached firmware)");
 	}
 
-	/* Start BAS discovery after DIS (runs in background, not critical for CONNECTED state) */
+	/* Start BAS discovery after DIS (runs in background, not critical for CONNECTED state).
+	 * SFP-657: skip for a sim link — probing the standard Battery Service (0x180F)
+	 * makes iOS fire a Security Request (it bonds accessories that expose HID/Battery),
+	 * and its app-peripheral can't complete LESC, so the link sits in a 30s pairing
+	 * limbo that withholds notifications. The sim's battery is irrelevant anyway. */
+	if (ble_central_is_sim_link()) {
+		LOG_INF("Sim link — skipping BAS discovery (avoids iOS Security Request)");
+		return;
+	}
 	LOG_INF("Starting BAS (Battery Service) discovery...");
 	ble_bas_discover(conn);
 }
@@ -577,6 +585,18 @@ static void gatt_discover(struct bt_conn *conn)
 
 	/* Reset discovery state */
 	nus_discovery_complete = false;
+
+	/* SFP-657: the iOS sim has no HOGP — its HID is the custom 6E40FF02 char
+	 * handled by sim_hid_relay. Probing for the standard HID service (0x1812)
+	 * makes iOS fire a Security Request (HID-over-GATT mandates encryption), but
+	 * its app-based peripheral can't complete LESC, so pairing stalls 30s and the
+	 * link drops. Skip HOGP discovery for a sim link and go straight to NUS. */
+	if (ble_central_is_sim_link()) {
+		LOG_INF("Sim link — skipping HOGP discovery, going straight to NUS");
+		hid_discovery_complete = true;  /* sim HID is handled separately */
+		ble_nus_client_discover(conn);
+		return;
+	}
 
 	/* Start HID (HOGP) discovery FIRST for fastest input passthrough */
 	LOG_INF("Starting HID service discovery first for fastest input...");
