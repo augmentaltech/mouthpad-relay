@@ -32,4 +32,12 @@ config SETTINGS
 config NVS
 	default y if !(SOC_FLASH_NRF_RRAM || SOC_FLASH_NRF_MRAM)
 
+# KTD2026 RGB LED driver I2C address. Different parts in the KTD2026 family use
+# different fixed addresses: the production Dotto part is 0x32; the KTD2026 dev
+# kit is 0x30. Default is the Dotto part; for the dev kit build with the overlay
+# `-DEXTRA_CONF_FILE=dev_kit.conf` (which sets CONFIG_KTD2026_I2C_ADDR=0x30).
+config KTD2026_I2C_ADDR
+	hex "KTD2026 RGB LED driver I2C address"
+	default 0x32
+
 source "Kconfig.zephyr"

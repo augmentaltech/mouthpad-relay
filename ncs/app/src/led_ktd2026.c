@@ -38,7 +38,11 @@ LOG_MODULE_REGISTER(led_ktd2026, LOG_LEVEL_INF);
 /* Default per-channel current: 0.125mA * (IOUT + 1) */
 #define KTD2026_DEFAULT_IOUT     0x01U
 
-static const struct i2c_dt_spec ktd = I2C_DT_SPEC_GET(DT_NODELABEL(ktd2026));
+/* Bus + pins come from devicetree; the 7-bit address is a compile-time Kconfig
+ * (CONFIG_KTD2026_I2C_ADDR, default 0x32 = Dotto, 0x30 = dev kit) so a board with
+ * a different part in the KTD2026 family can be selected without editing the DTS.
+ * Not const — .addr is overridden from Kconfig in ktd2026_init(). */
+static struct i2c_dt_spec ktd = I2C_DT_SPEC_GET(DT_NODELABEL(ktd2026));
 static uint8_t channel_ctrl_reg;
 static bool ready;
 
@@ -58,6 +62,10 @@ int ktd2026_init(void)
 		LOG_ERR("KTD2026 I2C bus not ready");
 		return -ENODEV;
 	}
+
+	/* Address from Kconfig (overrides the devicetree reg). */
+	ktd.addr = CONFIG_KTD2026_I2C_ADDR;
+	LOG_INF("KTD2026 I2C address 0x%02x", ktd.addr);
 
 	/* Reset whole chip. The datasheet says the reset command ends in a NACK that
 	 * must be ignored, so don't treat an I2C error here as fatal. */

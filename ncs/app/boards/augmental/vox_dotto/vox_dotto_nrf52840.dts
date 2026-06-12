@@ -65,7 +65,10 @@
 	status = "okay";
 };
 
-/* KTD2026 RGB LED driver: SCL P0.8 / SDA P0.6, I2C addr 0x32.
+/* KTD2026 RGB LED driver: SCL P0.8 / SDA P0.6.
+ * The address the driver uses comes from CONFIG_KTD2026_I2C_ADDR: 0x32 for the
+ * production Dotto part (default), 0x30 for the KTD2026 dev kit (build with
+ * -DEXTRA_CONF_FILE=dev_kit.conf). The reg here is just the binding default.
  * Dotto channel map: red = CH3, green = CH2, blue = CH1. */
 &i2c0 {
 	compatible = "nordic,nrf-twi";
