@@ -66,4 +66,21 @@ void ble_transport_usb_host_changed(bool connected);
  * scanning alive independently of the (flappy) HID-host state. */
 void ble_transport_nus_host_changed(bool connected);
 
+/* SFP-667: runtime-selectable PHY for the relay<->MouthPad (central) link. The
+ * host link is unaffected. CODED_S8 is the default (max margin). */
+enum relay_link_phy {
+	RELAY_LINK_PHY_1M = 0,
+	RELAY_LINK_PHY_2M = 1,
+	RELAY_LINK_PHY_CODED_S2 = 2,
+	RELAY_LINK_PHY_CODED_S8 = 3,
+};
+
+/* Set the preferred MouthPad-link PHY and (re)apply it to the live link. */
+void ble_transport_set_link_phy(enum relay_link_phy phy);
+/* Currently preferred PHY (what we're driving the link to). */
+enum relay_link_phy ble_transport_get_link_phy(void);
+/* The PHY actually negotiated on the MouthPad link right now (best-effort; Coded
+ * S2/S8 both report CODED_S8 as the controller can't distinguish coding here). */
+enum relay_link_phy ble_transport_get_active_link_phy(void);
+
 #endif /* BLE_TRANSPORT_H */

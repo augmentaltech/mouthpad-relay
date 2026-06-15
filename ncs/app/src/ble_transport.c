@@ -90,6 +90,44 @@ static struct k_work_delayable coded_phy_work;
 static void coded_phy_work_handler(struct k_work *work);
 static int coded_phy_attempts;
 #define CODED_PHY_MAX_ATTEMPTS 12   /* ~12s of re-checks at 1s spacing */
+/* Runtime-selectable PHY for the MouthPad (central) link; default Coded S=8.
+ * Changed via ble_transport_set_link_phy() (companion SetLinkPhy proto message). */
+static enum relay_link_phy s_link_phy_pref = RELAY_LINK_PHY_CODED_S8;
+
+/* Map the preference to bt_conn_le_phy_param + a GAP base-PHY for verification. */
+static uint8_t link_phy_params(struct bt_conn_le_phy_param *p)
+{
+	switch (s_link_phy_pref) {
+	case RELAY_LINK_PHY_1M:
+		p->options = BT_CONN_LE_PHY_OPT_NONE;
+		p->pref_tx_phy = p->pref_rx_phy = BT_GAP_LE_PHY_1M;
+		return BT_GAP_LE_PHY_1M;
+	case RELAY_LINK_PHY_2M:
+		p->options = BT_CONN_LE_PHY_OPT_NONE;
+		p->pref_tx_phy = p->pref_rx_phy = BT_GAP_LE_PHY_2M;
+		return BT_GAP_LE_PHY_2M;
+	case RELAY_LINK_PHY_CODED_S2:
+		p->options = BT_CONN_LE_PHY_OPT_CODED_S2;
+		p->pref_tx_phy = p->pref_rx_phy = BT_GAP_LE_PHY_CODED;
+		return BT_GAP_LE_PHY_CODED;
+	case RELAY_LINK_PHY_CODED_S8:
+	default:
+		p->options = BT_CONN_LE_PHY_OPT_CODED_S8;
+		p->pref_tx_phy = p->pref_rx_phy = BT_GAP_LE_PHY_CODED;
+		return BT_GAP_LE_PHY_CODED;
+	}
+}
+
+static const char *link_phy_name(enum relay_link_phy phy)
+{
+	switch (phy) {
+	case RELAY_LINK_PHY_1M:       return "1M";
+	case RELAY_LINK_PHY_2M:       return "2M";
+	case RELAY_LINK_PHY_CODED_S2: return "Coded S=2";
+	case RELAY_LINK_PHY_CODED_S8: return "Coded S=8";
+	default:                      return "?";
+	}
+}
 
 /* HID Bridge callbacks */
 static ble_data_callback_t hid_data_callback = NULL;
@@ -892,40 +930,76 @@ static void coded_phy_work_handler(struct k_work *work)
 		return;
 	}
 
-	/* Already on Coded? Done. */
+	struct bt_conn_le_phy_param phy_params;
+	uint8_t want_base = link_phy_params(&phy_params);
+
+	/* Settled on the target base PHY (after at least one request, so a Coded
+	 * S2<->S8 coding change still issues its update even though the base PHY is
+	 * unchanged and the controller can't report the coding back here). */
 	struct bt_conn_info info;
-	if (bt_conn_get_info(conn, &info) == 0 && info.le.phy &&
-	    info.le.phy->tx_phy == BT_GAP_LE_PHY_CODED) {
-		LOG_INF("MouthPad link is on Coded PHY (after %d attempt(s))",
-			coded_phy_attempts);
+	bool base_match = (bt_conn_get_info(conn, &info) == 0 && info.le.phy &&
+			   info.le.phy->tx_phy == want_base);
+	if (base_match && coded_phy_attempts > 0) {
+		LOG_INF("MouthPad link PHY settled: %s (after %d attempt(s))",
+			link_phy_name(s_link_phy_pref), coded_phy_attempts);
 		coded_phy_attempts = 0;
 		return;
 	}
 
 	if (coded_phy_attempts >= CODED_PHY_MAX_ATTEMPTS) {
-		LOG_WRN("Gave up forcing Coded PHY after %d attempts (link stays non-Coded)",
-			coded_phy_attempts);
+		LOG_WRN("Gave up forcing PHY %s after %d attempts",
+			link_phy_name(s_link_phy_pref), coded_phy_attempts);
 		coded_phy_attempts = 0;
 		return;
 	}
 	coded_phy_attempts++;
 
-	struct bt_conn_le_phy_param phy_params = {
-		.options = BT_CONN_LE_PHY_OPT_CODED_S8,
-		.pref_tx_phy = BT_GAP_LE_PHY_CODED,
-		.pref_rx_phy = BT_GAP_LE_PHY_CODED,
-	};
-
 	int err = bt_conn_le_phy_update(conn, &phy_params);
 	if (err) {
-		LOG_WRN("Coded S=8 PHY update attempt %d failed to start (err %d) — retrying",
-			coded_phy_attempts, err);
+		LOG_WRN("PHY update to %s attempt %d failed to start (err %d) — retrying",
+			link_phy_name(s_link_phy_pref), coded_phy_attempts, err);
 	} else {
-		LOG_INF("PHY update requested: LE Coded S=8 (attempt %d)", coded_phy_attempts);
+		LOG_INF("PHY update requested: %s (attempt %d)",
+			link_phy_name(s_link_phy_pref), coded_phy_attempts);
 	}
 	/* Re-check after the procedure (or its collision) settles; verifies success
 	 * and retries if the request was rejected asynchronously. */
 	k_work_schedule(&coded_phy_work, K_MSEC(1000));
+}
+
+void ble_transport_set_link_phy(enum relay_link_phy phy)
+{
+	s_link_phy_pref = phy;
+	LOG_INF("Link PHY preference set to %s — applying to MouthPad link",
+		link_phy_name(phy));
+	/* Re-run the apply/retry from scratch against the live link (if any). */
+	coded_phy_attempts = 0;
+	k_work_reschedule(&coded_phy_work, K_NO_WAIT);
+}
+
+enum relay_link_phy ble_transport_get_link_phy(void)
+{
+	return s_link_phy_pref;
+}
+
+enum relay_link_phy ble_transport_get_active_link_phy(void)
+{
+	struct bt_conn *conn = ble_central_get_default_conn();
+	struct bt_conn_info info;
+	if (conn && bt_conn_get_info(conn, &info) == 0 && info.le.phy) {
+		switch (info.le.phy->tx_phy) {
+		case BT_GAP_LE_PHY_2M:    return RELAY_LINK_PHY_2M;
+		case BT_GAP_LE_PHY_CODED:
+			/* Can't tell S2 vs S8 from the controller; report our preference
+			 * if it's a Coded variant, else default to S8. */
+			return (s_link_phy_pref == RELAY_LINK_PHY_CODED_S2)
+				       ? RELAY_LINK_PHY_CODED_S2
+				       : RELAY_LINK_PHY_CODED_S8;
+		case BT_GAP_LE_PHY_1M:
+		default:                  return RELAY_LINK_PHY_1M;
+		}
+	}
+	return RELAY_LINK_PHY_1M;
 }
 
 /* RSSI work handler - reads actual connection RSSI using HCI command */

@@ -522,6 +522,35 @@ static void handle_app_to_relay_payload(const uint8_t *buf, uint16_t len)
 								} else {
 									relay_mic_stop();
 								}
+							} else if (message.which_message_body == mouthware_message_AppToRelayMessage_set_link_phy_tag) {
+								/* SFP-667: runtime PHY selection for the relay<->MouthPad link. */
+								mouthware_message_LinkPhy req = message.message_body.set_link_phy.phy;
+								enum relay_link_phy rphy = RELAY_LINK_PHY_CODED_S8;
+								switch (req) {
+								case mouthware_message_LinkPhy_LINK_PHY_1M:       rphy = RELAY_LINK_PHY_1M; break;
+								case mouthware_message_LinkPhy_LINK_PHY_2M:       rphy = RELAY_LINK_PHY_2M; break;
+								case mouthware_message_LinkPhy_LINK_PHY_CODED_S2: rphy = RELAY_LINK_PHY_CODED_S2; break;
+								case mouthware_message_LinkPhy_LINK_PHY_CODED_S8: rphy = RELAY_LINK_PHY_CODED_S8; break;
+								default: break;
+								}
+								LOG_INF("=== SET LINK PHY REQUEST (proto enum %d) ===", (int)req);
+								ble_transport_set_link_phy(rphy);
+
+								static const mouthware_message_LinkPhy to_proto[] = {
+									[RELAY_LINK_PHY_1M] = mouthware_message_LinkPhy_LINK_PHY_1M,
+									[RELAY_LINK_PHY_2M] = mouthware_message_LinkPhy_LINK_PHY_2M,
+									[RELAY_LINK_PHY_CODED_S2] = mouthware_message_LinkPhy_LINK_PHY_CODED_S2,
+									[RELAY_LINK_PHY_CODED_S8] = mouthware_message_LinkPhy_LINK_PHY_CODED_S8,
+								};
+								mouthware_message_RelayToAppMessage response = mouthware_message_RelayToAppMessage_init_zero;
+								response.which_message_body = mouthware_message_RelayToAppMessage_link_phy_response_tag;
+								response.message_body.link_phy_response.success = true;
+								response.message_body.link_phy_response.requested = req;
+								/* Current (pre-change) negotiated PHY — the update completes async. */
+								mouthware_message_LinkPhy active = to_proto[ble_transport_get_active_link_phy()];
+								response.message_body.link_phy_response.active_tx = active;
+								response.message_body.link_phy_response.active_rx = active;
+								usb_cdc_send_proto_message_async(response);
 							}
 							break;
 
