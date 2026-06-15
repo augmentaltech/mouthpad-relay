@@ -302,9 +302,37 @@ static void security_changed(struct bt_conn *conn, bt_security_t level,
 
 	if (!err) {
 		LOG_INF("Security changed: %s level %u", addr, level);
-	} else {
-		LOG_WRN("Security failed: %s level %u err %d %s", addr, level, err,
-			bt_security_err_to_str(err));
+		return;
+	}
+
+	LOG_WRN("Security failed: %s level %u err %d %s", addr, level, err,
+		bt_security_err_to_str(err));
+
+	/* Self-heal a stale/mismatched bond. If security fails because the LTK is
+	 * missing/mismatched or the auth requirements can't be met, our stored bond
+	 * for this peer is bad (e.g. the peer was re-paired or its keys were wiped
+	 * elsewhere). Delete our bond and drop the link so the peer re-pairs cleanly
+	 * on the next connect — mirrors the MouthPad's behavior and ends the
+	 * connect→fail→retry churn that otherwise needs a manual bond wipe.
+	 *
+	 * Errors NOT in this set (e.g. UNSPECIFIED from the iOS sim's incomplete
+	 * pairing) are left alone; the sim is never bonded so unpair would be a no-op
+	 * anyway, but disconnecting it on every spurious request is undesirable. */
+	switch (err) {
+	case BT_SECURITY_ERR_PIN_OR_KEY_MISSING:
+	case BT_SECURITY_ERR_AUTH_FAIL:
+	case BT_SECURITY_ERR_AUTH_REQUIREMENT: {
+		const bt_addr_le_t *peer = bt_conn_get_dst(conn);
+
+		LOG_WRN("Deleting stale bond for %s and disconnecting to force a clean re-pair",
+			addr);
+		(void)bt_unpair(BT_ID_DEFAULT, peer);
+		(void)ble_central_remove_bonded_device(peer);
+		(void)bt_conn_disconnect(conn, BT_HCI_ERR_AUTH_FAIL);
+		break;
+	}
+	default:
+		break;
 	}
 }
 
