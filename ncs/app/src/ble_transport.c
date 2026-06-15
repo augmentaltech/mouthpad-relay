@@ -1138,20 +1138,91 @@ void ble_transport_disconnect(void)
 	}
 }
 
-void ble_transport_clear_bonds(void)
-{
-	LOG_INF("Clearing all BLE bonds...");
+/* Context for the clear-bonds bond walk. We preserve the host<->relay bond(s)
+ * — i.e. peers of any connection where the relay is the PERIPHERAL (the
+ * companion/computer/phone that drives the relay) — and unpair everything else
+ * (the relay's central-side MouthPad bonds). bt_unpair() inside a
+ * bt_foreach_bond() callback would mutate the list mid-iteration, so we collect
+ * the addresses first and unpair afterwards. */
+struct clear_bonds_ctx {
+	bt_addr_le_t preserve[CONFIG_BT_MAX_CONN];
+	size_t preserve_count;
+	bt_addr_le_t to_unpair[CONFIG_BT_MAX_PAIRED];
+	size_t unpair_count;
+};
 
-	/* Clear all bonds */
-	int err = bt_unpair(BT_ID_DEFAULT, NULL);
-	if (err) {
-		LOG_ERR("Failed to clear bonds (err %d)", err);
+static void clear_bonds_collect_host(struct bt_conn *conn, void *user_data)
+{
+	struct clear_bonds_ctx *ctx = user_data;
+	struct bt_conn_info info;
+
+	if (bt_conn_get_info(conn, &info) != 0 || info.type != BT_CONN_TYPE_LE) {
 		return;
 	}
+	/* The relay is the peripheral on the host link; the central role is the
+	 * MouthPad link, whose bond we DO want to clear. */
+	if (info.role != BT_CONN_ROLE_PERIPHERAL) {
+		return;
+	}
+	if (ctx->preserve_count < ARRAY_SIZE(ctx->preserve)) {
+		bt_addr_le_copy(&ctx->preserve[ctx->preserve_count++],
+				bt_conn_get_dst(conn));
+	}
+}
 
-	/* Clear bonded device tracking in ble_central */
-	extern void ble_central_clear_bonded_device(void);
-	ble_central_clear_bonded_device();
+static void clear_bonds_collect_unpair(const struct bt_bond_info *info, void *user_data)
+{
+	struct clear_bonds_ctx *ctx = user_data;
 
-	LOG_INF("All BLE bonds cleared successfully");
+	for (size_t i = 0; i < ctx->preserve_count; i++) {
+		if (bt_addr_le_eq(&ctx->preserve[i], &info->addr)) {
+			return; /* host<->relay bond — keep it */
+		}
+	}
+	if (ctx->unpair_count < ARRAY_SIZE(ctx->to_unpair)) {
+		bt_addr_le_copy(&ctx->to_unpair[ctx->unpair_count++], &info->addr);
+	}
+}
+
+void ble_transport_clear_bonds(void)
+{
+	static struct clear_bonds_ctx ctx; /* large; avoid the work-queue stack */
+
+	LOG_INF("Clearing MouthPad bonds (preserving host<->relay bond)...");
+
+	memset(&ctx, 0, sizeof(ctx));
+
+	/* Identify the host link(s) to preserve: peers where we are peripheral. */
+	bt_conn_foreach(BT_CONN_TYPE_LE, clear_bonds_collect_host, &ctx);
+	for (size_t i = 0; i < ctx.preserve_count; i++) {
+		char addr_str[BT_ADDR_LE_STR_LEN];
+		bt_addr_le_to_str(&ctx.preserve[i], addr_str, sizeof(addr_str));
+		LOG_INF("Preserving host bond: %s", addr_str);
+	}
+	if (ctx.preserve_count == 0) {
+		LOG_WRN("No connected host found; clearing every bond");
+	}
+
+	/* Collect every bond that isn't a preserved host, then unpair them. */
+	bt_foreach_bond(BT_ID_DEFAULT, clear_bonds_collect_unpair, &ctx);
+
+	for (size_t i = 0; i < ctx.unpair_count; i++) {
+		char addr_str[BT_ADDR_LE_STR_LEN];
+		bt_addr_le_to_str(&ctx.to_unpair[i], addr_str, sizeof(addr_str));
+
+		int err = bt_unpair(BT_ID_DEFAULT, &ctx.to_unpair[i]);
+		if (err) {
+			LOG_ERR("Failed to unpair %s (err %d)", addr_str, err);
+			continue;
+		}
+		LOG_INF("Unpaired %s", addr_str);
+
+		/* Drop ble_central's tracking (also clears the cached DIS + settings
+		 * for this MouthPad). Returns -ENOENT for a bond we weren't tracking
+		 * (e.g. a stale host bond when no host is connected) — harmless. */
+		(void)ble_central_remove_bonded_device(&ctx.to_unpair[i]);
+	}
+
+	LOG_INF("Cleared %zu bond(s), preserved %zu host bond(s)",
+		ctx.unpair_count, ctx.preserve_count);
 }
