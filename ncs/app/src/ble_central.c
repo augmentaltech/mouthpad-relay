@@ -62,7 +62,7 @@ static int64_t additional_scan_start_time = 0;
  * ignores other MouthPads in RF range (it otherwise pairs with the first found,
  * which may be a stranger with a stale bond). Static-random address from
  * tools/read_ble_mac.sh. TL_MPMPMPMP DK = EA:6B:09:76:D4:BE. Set to "" to disable. */
-#define RELAY_TARGET_MOUTHPAD_ADDR "EA:6B:09:76:D4:BE"
+#define RELAY_TARGET_MOUTHPAD_ADDR ""
 
 /* SFP-657 probe: also try to connect to the iOS MouthPad simulator, which has
  * NO HID service + no MouthPad mfr data — it advertises NUS + a custom identity
