@@ -81,6 +81,16 @@ static char connected_device_name[32] = "MouthPad USB";  /* Shortened to fit 12 
 static struct k_work_delayable rssi_read_work;
 static bool rssi_reading_active = false;
 
+/* SFP-667: deferred LE Coded S=8 PHY update for the MouthPad (central) link.
+ * Issued ~1s after connect, not immediately, because the MouthPad auto-initiates
+ * its own PHY update on connect; an immediate request collides with it (HCI
+ * "Different Transaction Collision" 0x3a) and fails. By 1s the peer's update has
+ * settled and the link is idle, so the Coded request runs cleanly. */
+static struct k_work_delayable coded_phy_work;
+static void coded_phy_work_handler(struct k_work *work);
+static int coded_phy_attempts;
+#define CODED_PHY_MAX_ATTEMPTS 12   /* ~12s of re-checks at 1s spacing */
+
 /* HID Bridge callbacks */
 static ble_data_callback_t hid_data_callback = NULL;
 static ble_ready_callback_t hid_ready_callback = NULL;
@@ -224,6 +234,7 @@ int ble_transport_init(void)
 
 	/* Initialize RSSI reading work */
 	k_work_init_delayable(&rssi_read_work, rssi_read_work_handler);
+	k_work_init_delayable(&coded_phy_work, coded_phy_work_handler);
 
 	/* SFP-667: do NOT scan at boot. Central scanning is gated on a host being
 	 * attached to our output (BLE HID peripheral or USB) — there's no point
@@ -637,18 +648,18 @@ static void ble_central_connected_cb(struct bt_conn *conn)
 	}
 
 #if defined(CONFIG_BT_USER_PHY_UPDATE)
-	/* Request PHY update for better throughput or range */
-	struct bt_conn_le_phy_param phy_params = {
-		.options = BT_CONN_LE_PHY_OPT_NONE,
-		.pref_tx_phy = BT_GAP_LE_PHY_2M | BT_GAP_LE_PHY_CODED, /* Prefer 2M for speed or Coded for range */
-		.pref_rx_phy = BT_GAP_LE_PHY_2M | BT_GAP_LE_PHY_CODED
-	};
-	
-	err = bt_conn_le_phy_update(conn, &phy_params);
-	if (err) {
-		LOG_WRN("Failed to request PHY update (err %d)", err);
-	} else {
-		LOG_INF("PHY update requested (2M or Coded PHY for better signal)");
+	/* SFP-667: force LE Coded S=8 on the MouthPad (central) link to hold the link
+	 * with ~8 dB of extra margin. The central is the PHY arbiter, so requesting it
+	 * here is sufficient (the MouthPad need not ask). The S=8 option sets our TX
+	 * (relay->MouthPad) coding; the uplink follows the MouthPad's controller.
+	 * TODO: make the preference (1M/2M/Coded S2/S8) runtime-configurable from the
+	 * companion via a SetLinkPhy proto message. The sim/phone can't do a PHY
+	 * update (returns unsupported), so skip it on a sim link. */
+	if (!ble_central_is_sim_link()) {
+		/* Deferred + self-retrying so it doesn't collide with the MouthPad's own
+		 * on-connect PHY update (see coded_phy_work comment). */
+		coded_phy_attempts = 0;
+		k_work_schedule(&coded_phy_work, K_MSEC(1000));
 	}
 #endif
 
@@ -721,9 +732,10 @@ static void ble_central_disconnected_cb(struct bt_conn *conn, uint8_t reason)
 	tx_in_flight = false;
 	k_mutex_unlock(&tx_q_lock);
 
-	/* Stop periodic RSSI reading */
+	/* Stop periodic RSSI reading + any pending Coded PHY update */
 	rssi_reading_active = false;
 	k_work_cancel_delayable(&rssi_read_work);
+	k_work_cancel_delayable(&coded_phy_work);
 	LOG_INF("Stopped periodic RSSI reading");
 	mtu_exchange_complete = false;
 	nus_discovery_complete = false;
@@ -864,6 +876,57 @@ int8_t ble_transport_get_rssi(void)
 	return current_rssi;
 }
 
+
+/* Deferred Coded S=8 PHY update for the MouthPad (central) link (see decl).
+ * Self-correcting: each pass reads the current PHY and stops once Coded; until
+ * then it (re)requests Coded and reschedules. The MouthPad initiates its own PHY
+ * update at a variable time after connect, so a single request often collides
+ * (HCI 0x3a). Re-checking + retrying lands a request in a quiet window. */
+static void coded_phy_work_handler(struct k_work *work)
+{
+	ARG_UNUSED(work);
+
+	struct bt_conn *conn = ble_central_get_default_conn();
+	if (!conn || ble_central_is_sim_link()) {
+		coded_phy_attempts = 0;
+		return;
+	}
+
+	/* Already on Coded? Done. */
+	struct bt_conn_info info;
+	if (bt_conn_get_info(conn, &info) == 0 && info.le.phy &&
+	    info.le.phy->tx_phy == BT_GAP_LE_PHY_CODED) {
+		LOG_INF("MouthPad link is on Coded PHY (after %d attempt(s))",
+			coded_phy_attempts);
+		coded_phy_attempts = 0;
+		return;
+	}
+
+	if (coded_phy_attempts >= CODED_PHY_MAX_ATTEMPTS) {
+		LOG_WRN("Gave up forcing Coded PHY after %d attempts (link stays non-Coded)",
+			coded_phy_attempts);
+		coded_phy_attempts = 0;
+		return;
+	}
+	coded_phy_attempts++;
+
+	struct bt_conn_le_phy_param phy_params = {
+		.options = BT_CONN_LE_PHY_OPT_CODED_S8,
+		.pref_tx_phy = BT_GAP_LE_PHY_CODED,
+		.pref_rx_phy = BT_GAP_LE_PHY_CODED,
+	};
+
+	int err = bt_conn_le_phy_update(conn, &phy_params);
+	if (err) {
+		LOG_WRN("Coded S=8 PHY update attempt %d failed to start (err %d) — retrying",
+			coded_phy_attempts, err);
+	} else {
+		LOG_INF("PHY update requested: LE Coded S=8 (attempt %d)", coded_phy_attempts);
+	}
+	/* Re-check after the procedure (or its collision) settles; verifies success
+	 * and retries if the request was rejected asynchronously. */
+	k_work_schedule(&coded_phy_work, K_MSEC(1000));
+}
 
 /* RSSI work handler - reads actual connection RSSI using HCI command */
 static void rssi_read_work_handler(struct k_work *work)

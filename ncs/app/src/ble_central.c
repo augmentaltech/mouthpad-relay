@@ -35,8 +35,14 @@ enum ble_central_state {
 
 /* BLE Central state */
 static struct bt_conn *default_conn;
-static struct k_work scan_work;
-static struct k_work_delayable scan_indicator_work;
+/* Statically initialize the scan work items so their handlers are valid before
+ * main() — a host can auto-reconnect and trigger a scan (k_work_schedule) during
+ * the slow ble_central init (settings + per-bond DIS loads), which previously
+ * scheduled an uninitialized work and panicked (work.c handler!=NULL assert). */
+static void scan_work_handler(struct k_work *item);
+static void scan_indicator_handler(struct k_work *work);
+static K_WORK_DEFINE(scan_work, scan_work_handler);
+static K_WORK_DELAYABLE_DEFINE(scan_indicator_work, scan_indicator_handler);
 static enum ble_central_state connection_state = BLE_CENTRAL_STATE_DISCONNECTED;
 /* The current central link is the iOS sim (no pairing; plaintext GATT). Set when
  * connecting to the sim, cleared when connecting to a MouthPad or on disconnect.
@@ -115,6 +121,9 @@ static ble_central_disconnected_cb_t disconnected_cb;
 static void connected(struct bt_conn *conn, uint8_t conn_err);
 static void disconnected(struct bt_conn *conn, uint8_t reason);
 static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_security_err err);
+#if defined(CONFIG_BT_USER_PHY_UPDATE)
+static void le_phy_updated(struct bt_conn *conn, struct bt_conn_le_phy_info *param);
+#endif
 
 /* Scan callbacks */
 static void scan_filter_match(struct bt_scan_device_info *device_info,
@@ -149,7 +158,10 @@ SETTINGS_STATIC_HANDLER_DEFINE(ble_central, "ble_central", NULL, bonded_name_set
 BT_CONN_CB_DEFINE(conn_callbacks) = {
 	.connected = connected,
 	.disconnected = disconnected,
-	.security_changed = security_changed
+	.security_changed = security_changed,
+#if defined(CONFIG_BT_USER_PHY_UPDATE)
+	.le_phy_updated = le_phy_updated,
+#endif
 };
 
 /* Forward declarations for background scanning */
@@ -295,6 +307,30 @@ static void security_changed(struct bt_conn *conn, bt_security_t level,
 			bt_security_err_to_str(err));
 	}
 }
+
+#if defined(CONFIG_BT_USER_PHY_UPDATE)
+static const char *phy_str(uint8_t phy)
+{
+	switch (phy) {
+	case BT_GAP_LE_PHY_1M:    return "1M";
+	case BT_GAP_LE_PHY_2M:    return "2M";
+	case BT_GAP_LE_PHY_CODED: return "Coded";
+	default:                  return "none";
+	}
+}
+
+/* Confirms the negotiated PHY after a PHY update. Note the HCI PHY info only
+ * reports "Coded" — it does not distinguish S=2 vs S=8 (that's a TX coding
+ * detail), so "Coded" here confirms the link switched off 1M/2M. */
+static void le_phy_updated(struct bt_conn *conn, struct bt_conn_le_phy_info *param)
+{
+	char addr[BT_ADDR_LE_STR_LEN];
+
+	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+	LOG_INF("PHY updated: %s tx=%s rx=%s", addr,
+		phy_str(param->tx_phy), phy_str(param->rx_phy));
+}
+#endif
 
 /* Scanning indicator work handler */
 static void scan_indicator_handler(struct k_work *work)
@@ -1067,9 +1103,8 @@ int ble_central_init(void)
 	bt_scan_init(&scan_init);
 	bt_scan_cb_register(&scan_cb);
 
-	/* Initialize scan work */
-	k_work_init(&scan_work, scan_work_handler);
-	k_work_init_delayable(&scan_indicator_work, scan_indicator_handler);
+	/* Scan work items are statically initialized (K_WORK_DEFINE above), so no
+	 * runtime k_work_init is needed and they can't be scheduled uninitialized. */
 	LOG_INF("Scan module initialized");
 
 	return 0;
