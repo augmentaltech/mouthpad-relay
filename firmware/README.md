@@ -4,7 +4,7 @@ J-Link / SWD-flashable images for the MouthPad relay.
 
 | File | Board | Variant | Version | Source commit |
 |------|-------|---------|---------|---------------|
-| `mouthpad-relay-dotto-v0.1.4.hex` | `vox_dotto/nrf52840` | Production Dotto (KTD2026 @ 0x32) | 0.1.4 | `11ed60f` |
+| `mouthpad-relay-dotto-v0.1.4.hex` | `vox_dotto/nrf52840` | Production Dotto (KTD2026 @ 0x32) | 0.1.4 | `e51f340` |
 
 These are **flat images** (SoftDevice Controller linked into the app, no separate
 bootloader) that own flash from 0x0 — they replace whatever is on the chip.
