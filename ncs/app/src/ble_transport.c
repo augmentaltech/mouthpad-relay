@@ -138,6 +138,7 @@ static void ble_nus_data_received_cb(const uint8_t *data, uint16_t len);
 static void nus_tx_sent_cb(uint8_t err);
 static void tx_drain(void);
 static void rssi_read_work_handler(struct k_work *work);
+static void ble_transport_send_link_status(int8_t rssi);
 static void dis_discovery_complete_cb(struct bt_conn *conn);
 static void ble_nus_discovery_complete_cb(void);
 static void ble_nus_mtu_exchange_cb(uint16_t mtu);
@@ -943,6 +944,9 @@ static void coded_phy_work_handler(struct k_work *work)
 		LOG_INF("MouthPad link PHY settled: %s (after %d attempt(s))",
 			link_phy_name(s_link_phy_pref), coded_phy_attempts);
 		coded_phy_attempts = 0;
+		/* Report the now-settled link PHY to the host alongside RSSI, so the
+		 * app learns the link type on connect without waiting for the 2s tick. */
+		ble_transport_send_link_status(last_known_rssi);
 		return;
 	}
 
@@ -1000,6 +1004,38 @@ enum relay_link_phy ble_transport_get_active_link_phy(void)
 		}
 	}
 	return RELAY_LINK_PHY_1M;
+}
+
+static mouthware_message_LinkPhy link_phy_to_proto(enum relay_link_phy phy)
+{
+	switch (phy) {
+	case RELAY_LINK_PHY_2M:       return mouthware_message_LinkPhy_LINK_PHY_2M;
+	case RELAY_LINK_PHY_CODED_S2: return mouthware_message_LinkPhy_LINK_PHY_CODED_S2;
+	case RELAY_LINK_PHY_CODED_S8: return mouthware_message_LinkPhy_LINK_PHY_CODED_S8;
+	case RELAY_LINK_PHY_1M:
+	default:                      return mouthware_message_LinkPhy_LINK_PHY_1M;
+	}
+}
+
+/* SFP-667: push a BleConnectionStatusResponse to the host(s) carrying the
+ * MouthPad-link RSSI, battery, and the active relay<->MouthPad link PHY. Sent on
+ * the 2s RSSI refresh and once more as soon as the link PHY settles after connect
+ * (so the app learns the link type promptly, alongside RSSI). Reuses the usb_cdc
+ * fan-out (USB CDC + BLE host). */
+static void ble_transport_send_link_status(int8_t rssi)
+{
+	mouthware_message_RelayToAppMessage status =
+		mouthware_message_RelayToAppMessage_init_zero;
+	status.which_message_body =
+		mouthware_message_RelayToAppMessage_ble_connection_status_response_tag;
+	status.message_body.ble_connection_status_response.connection_status =
+		mouthware_message_RelayBleConnectionStatus_RELAY_CONNECTION_STATUS_CONNECTED;
+	status.message_body.ble_connection_status_response.rssi = rssi;
+	status.message_body.ble_connection_status_response.battery_level =
+		ble_bas_get_battery_level();
+	status.message_body.ble_connection_status_response.active_link_phy =
+		link_phy_to_proto(ble_transport_get_active_link_phy());
+	(void)usb_cdc_send_proto_message_async(status);
 }
 
 /* RSSI work handler - reads actual connection RSSI using HCI command */
@@ -1075,22 +1111,9 @@ static void rssi_read_work_handler(struct k_work *work)
 	
 	last_known_rssi = new_rssi;
 
-	/* SFP-667: push the freshly-read MouthPad-link RSSI to the host(s) as its own
-	 * BleConnectionStatusResponse (companion shows the live link signal). Reuses
-	 * the existing message + usb_cdc fan-out (USB CDC + BLE host); sent on each 2s
-	 * refresh, separate from the relayed sensor stream. */
-	{
-		mouthware_message_RelayToAppMessage status =
-			mouthware_message_RelayToAppMessage_init_zero;
-		status.which_message_body =
-			mouthware_message_RelayToAppMessage_ble_connection_status_response_tag;
-		status.message_body.ble_connection_status_response.connection_status =
-			mouthware_message_RelayBleConnectionStatus_RELAY_CONNECTION_STATUS_CONNECTED;
-		status.message_body.ble_connection_status_response.rssi = new_rssi;
-		status.message_body.ble_connection_status_response.battery_level =
-			ble_bas_get_battery_level();
-		(void)usb_cdc_send_proto_message_async(status);
-	}
+	/* SFP-667: push the freshly-read MouthPad-link RSSI (+ active link PHY) to the
+	 * host(s) as a BleConnectionStatusResponse on each 2s refresh. */
+	ble_transport_send_link_status(new_rssi);
 
 cleanup_and_schedule:
 	if (rsp) {

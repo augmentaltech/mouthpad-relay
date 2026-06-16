@@ -331,6 +331,16 @@ static void handle_app_to_relay_payload(const uint8_t *buf, uint16_t len)
 
 								response.message_body.ble_connection_status_response.rssi = rssi_dbm;
 								response.message_body.ble_connection_status_response.battery_level = battery_level;
+								{
+									static const mouthware_message_LinkPhy phy_to_proto[] = {
+										[RELAY_LINK_PHY_1M] = mouthware_message_LinkPhy_LINK_PHY_1M,
+										[RELAY_LINK_PHY_2M] = mouthware_message_LinkPhy_LINK_PHY_2M,
+										[RELAY_LINK_PHY_CODED_S2] = mouthware_message_LinkPhy_LINK_PHY_CODED_S2,
+										[RELAY_LINK_PHY_CODED_S8] = mouthware_message_LinkPhy_LINK_PHY_CODED_S8,
+									};
+									response.message_body.ble_connection_status_response.active_link_phy =
+										phy_to_proto[ble_transport_get_active_link_phy()];
+								}
 								usb_cdc_send_proto_message_async(response);
 							} else if (message.which_message_body == mouthware_message_AppToRelayMessage_device_info_read_tag) {
 								/* Handle DeviceInfoRead request */
