@@ -90,9 +90,11 @@ static struct k_work_delayable coded_phy_work;
 static void coded_phy_work_handler(struct k_work *work);
 static int coded_phy_attempts;
 #define CODED_PHY_MAX_ATTEMPTS 12   /* ~12s of re-checks at 1s spacing */
-/* Runtime-selectable PHY for the MouthPad (central) link; default Coded S=8.
- * Changed via ble_transport_set_link_phy() (companion SetLinkPhy proto message). */
-static enum relay_link_phy s_link_phy_pref = RELAY_LINK_PHY_CODED_S8;
+/* Runtime-selectable PHY for the MouthPad (central) link. Defaults to 2M (the
+ * standard short-range link); Coded is used ONLY when the companion explicitly
+ * asks for it via ble_transport_set_link_phy() (SetLinkPhy proto message), so the
+ * relay never silently drops to a low-rate Coded link on its own. */
+static enum relay_link_phy s_link_phy_pref = RELAY_LINK_PHY_2M;
 
 /* Map the preference to bt_conn_le_phy_param + a GAP base-PHY for verification. */
 static uint8_t link_phy_params(struct bt_conn_le_phy_param *p)
