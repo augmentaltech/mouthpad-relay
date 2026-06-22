@@ -4,8 +4,12 @@ J-Link / SWD-flashable images for the MouthPad relay.
 
 | File | Board | Variant | Version | Source commit |
 |------|-------|---------|---------|---------------|
+| `mouthpad-relay-dotto-v0.1.6.hex` | `vox_dotto/nrf52840` | Production Dotto (KTD2026 @ 0x32) | 0.1.6 | `79b9870` |
 | `mouthpad-relay-dotto-v0.1.5.hex` | `vox_dotto/nrf52840` | Production Dotto (KTD2026 @ 0x32) | 0.1.5 | `fc21eff` |
 | `mouthpad-relay-dotto-v0.1.4.hex` | `vox_dotto/nrf52840` | Production Dotto (KTD2026 @ 0x32) | 0.1.4 | `e51f340` |
+
+Changes in 0.1.6 (since 0.1.5): the relay↔MouthPad link now defaults to 2M and
+only switches to Coded (S2/S8) when the companion explicitly requests it.
 
 Changes in 0.1.5 (since 0.1.4): runtime relay↔MouthPad link-PHY selection
 (1M/2M/Coded S2/S8), the active link PHY reported alongside RSSI, auto-unpair on
